@@ -1,0 +1,27 @@
+{
+  "name": "nodebb-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for investigating issues and finding answers on a NodeBB forum, with optional Q&A and Shotef triage integration.",
+  "type": "module",
+  "bin": { "nodebb-mcp": "dist/index.js" },
+  "main": "dist/index.js",
+  "files": ["dist", "resources", "README.md"],
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "test": "node --test \"tests/*.test.js\"",
+    "check": "tsc --noEmit && npm test"
+  },
+  "keywords": ["mcp", "nodebb", "forum", "model-context-protocol"],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2"
+  }
+}
