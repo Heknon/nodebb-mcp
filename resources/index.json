@@ -1,0 +1,98 @@
+{
+  "$comment": "Manifest of NodeBB plugin-authoring resources. Each entry maps an MCP resource URI to a file in this directory. `uri`, `name`, `title`, `description` and `mimeType` are the fields an MCP resources/list response needs; `path` (relative to this file) tells the server what to read for resources/read.",
+  "version": "1.0.0",
+  "generated": "2026-09-13",
+  "uriScheme": "nodebb",
+  "resources": [
+    {
+      "uri": "nodebb://plugin-dev/overview",
+      "name": "nodebb-plugin-overview",
+      "title": "NodeBB plugin development — overview",
+      "description": "Start here. The build-vs-restart mental model, minimum viable plugin anatomy, plugin.json wiring, the five rules that prevent most pain, and a triage checklist for when a change isn't taking effect.",
+      "mimeType": "text/markdown",
+      "path": "00-overview.md",
+      "keywords": ["overview", "getting-started", "plugin.json", "build", "restart", "triage"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/architecture",
+      "name": "nodebb-plugin-architecture",
+      "title": "Plugin architecture",
+      "description": "The nbb core-module loader, the core modules worth knowing, a plugin file layout that scales, package.json essentials, the startup lifecycle, cluster awareness via nconf runJobs, soft integration with other plugins, notifications, and privilege helpers.",
+      "mimeType": "text/markdown",
+      "path": "10-architecture.md",
+      "keywords": ["nbb", "require.main.require", "lifecycle", "library.js", "nconf", "runJobs", "notifications", "privileges", "cluster"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/hooks",
+      "name": "nodebb-plugin-hooks",
+      "title": "Hooks reference",
+      "description": "The static:/filter:/action: hook families and their contracts, sequential firing and noErrorHooks semantics, payload-shape drift across NodeBB majors, filtering out a topic's main post, avoiding re-entrancy on your own writes, and how to discover a hook's exact payload from the NodeBB source.",
+      "mimeType": "text/markdown",
+      "path": "20-hooks-reference.md",
+      "keywords": ["hooks", "static:app.load", "static:api.routes", "filter", "action", "action:post.save", "action:topic.save", "noErrorHooks"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/endpoints",
+      "name": "nodebb-plugin-endpoints",
+      "title": "Endpoints: page routes, JSON API, socket.io",
+      "description": "Choosing between page routes, /api/v3/plugins routes, and socket methods; setupPageRoute and setupAdminPageRoute; formatApiResponse and the wrap() error helper; CSRF from the browser; socket auth from socket.uid; live updates with rooms and ping broadcasts; optimistic concurrency.",
+      "mimeType": "text/markdown",
+      "path": "30-endpoints.md",
+      "keywords": ["routes", "api", "socket.io", "SocketPlugins", "formatApiResponse", "csrf", "rooms", "realtime", "auth"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/data-layer",
+      "name": "nodebb-plugin-data-layer",
+      "title": "The backend-agnostic data layer",
+      "description": "NodeBB's db abstraction (hashes, sets, sorted sets, lists), designing a namespaced key schema with indexes per view, backend-safe encode/decode of arrays and booleans, which reads are cached and which are not, batching reads to avoid N+1, funnelling writes through one state-machine function, and audit trails.",
+      "mimeType": "text/markdown",
+      "path": "40-data-layer.md",
+      "keywords": ["database", "redis", "mongodb", "postgres", "sorted set", "cache", "encoding", "keys", "audit"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/client-acp-templates",
+      "name": "nodebb-plugin-client-acp-templates",
+      "title": "Client scripts, ACP modules, templates, languages, CSS",
+      "description": "AMD client scripts and the action:ajaxify.end SPA lifecycle, available globals and app.require, attribute-safe escaping, ACP modules via the plugin.json modules map (and the empty-define requirement), Benjamin .tpl syntax, language keys with positional args, and dark-mode-safe CSS for Bootswatch skins.",
+      "mimeType": "text/markdown",
+      "path": "50-client-acp-templates.md",
+      "keywords": ["client", "ajaxify", "acp", "admin", "define", "templates", "benjamin", "tpl", "languages", "i18n", "css", "dark mode", "bootswatch"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/gotchas",
+      "name": "nodebb-plugin-gotchas",
+      "title": "Gotchas — the hours-eaters",
+      "description": "Sixteen traps as symptom → cause → fix: the HTML double-escape on titles, build js skipping templates and CSS, stale client bundles, server code cached in memory, npm install pruning the dev symlink, out-of-process writes hidden behind caches, top-level nbb() breaking unit tests, standalone script config crashes, async notification delivery, isActive cached at init, ACP define() resolving undefined, dark-skin token defaults, Redis dev data loss, EMFILE builds, and deploy-branch confusion.",
+      "mimeType": "text/markdown",
+      "path": "60-gotchas.md",
+      "keywords": ["gotchas", "debugging", "escaping", "double-escape", "build", "symlink", "cache", "EMFILE", "redis", "troubleshooting"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/testing",
+      "name": "nodebb-plugin-testing",
+      "title": "Testing a NodeBB plugin",
+      "description": "Three test layers. Unit tests with node:test by stubbing the nodebb global before requiring your modules (capturing responses and writes); seeding mock data from a standalone NodeBB-context script with the nconf/meta bootstrap that doesn't crash; driving the running forum over HTTP with a session cookie and CSRF token; and Playwright for visual confirmation.",
+      "mimeType": "text/markdown",
+      "path": "70-testing.md",
+      "keywords": ["testing", "node:test", "stub", "mock", "seed", "curl", "csrf", "playwright", "fixtures"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/recipes",
+      "name": "nodebb-plugin-recipes",
+      "title": "Recipes — scaffolding and dev environment",
+      "description": "Copy-paste starting points: a minimal plugin skeleton (package.json, plugin.json, nbb.js, library.js), setting up a local NodeBB + Redis dev forum from scratch with a symlinked plugin, the build/restart iteration loop, health checks, an auditable state-change function, a best-effort notification helper, and cluster-safe cron with idempotent per-period buckets.",
+      "mimeType": "text/markdown",
+      "path": "80-recipes.md",
+      "keywords": ["scaffold", "skeleton", "setup", "dev environment", "cron", "notifications", "boilerplate", "health check"]
+    },
+    {
+      "uri": "nodebb://plugin-dev/worked-example",
+      "name": "nodebb-plugin-worked-example",
+      "title": "Worked example — an annotated real plugin",
+      "description": "An annotated tour of nodebb-plugin-shotef, a ~5,200-line production plugin: its module map and line counts, how page routes, API routes and 21 socket methods divide the work, and the patterns worth copying (one state machine, config-driven behaviour, dual projections, wrapped action hooks, re-entrancy guards, graceful optional integration, ping broadcasts).",
+      "mimeType": "text/markdown",
+      "path": "90-worked-example.md",
+      "keywords": ["example", "case study", "shotef", "reference implementation", "patterns"]
+    }
+  ]
+}
