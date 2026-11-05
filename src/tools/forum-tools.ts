@@ -43,22 +43,25 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 				}
 				if (caps.forum.title) lines.push(`**Title:** ${caps.forum.title}`);
 				if (caps.forum.version) lines.push(`**NodeBB version:** ${caps.forum.version}`);
+				lines.push(`**Acting as:** ${caps.forum.authenticated
+					? `${caps.forum.username ?? 'unknown user'} (uid ${caps.forum.uid}) — verified by the forum`
+					: 'guest — only publicly readable content is visible'}`);
+				if (caps.forum.authProblem) lines.push('', `❌ **Token problem:** ${caps.forum.authProblem}`);
 				lines.push(
-					`**Authentication:** ${caps.forum.authenticated
-						? 'API token configured'
-						: 'anonymous — only publicly readable content is visible'}`,
 					'',
 					'| Feature | State | Detail |',
 					'| --- | --- | --- |',
 				);
 
-				const row = (label: string, cap: { state: string; reason?: string }) =>
-					`| ${label} | ${cap.state === 'available' ? '✅ available' : `⚠️ ${cap.state}`} | ${cap.reason ?? '—'} |`;
+				const row = (label: string, cap: { state: string; reason?: string; warning?: string }) =>
+					`| ${label} | ${cap.state === 'available' ? (cap.warning ? '⚠️ available' : '✅ available') : `⚠️ ${cap.state}`} ` +
+					`| ${cap.reason ?? cap.warning ?? '—'} |`;
 
 				lines.push(
 					row('Full-text search', caps.search),
 					row('Q&A (accepted answers)', caps.qna),
 					row('Shotef (triage board)', caps.shotef),
+					row('Writes (post, vote, triage)', caps.writes),
 					'',
 					`_Probed ${formatDate(caps.probedAt)}; cached for ${Math.round(ctx.config.capabilityTtlMs / 1000)}s._`,
 				);
@@ -140,6 +143,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					sortBy: args.sort_by,
 					limit: args.limit,
 					page: args.page,
+					qna: isUsable(caps.qna),
 				});
 
 				if (!hits.length) {
@@ -200,6 +204,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 				const topic = await getTopic(ctx.client, tid, {
 					maxPosts: max_posts ?? ctx.config.maxPostsPerTopic,
 					page,
+					qna: isUsable(caps.qna),
 				});
 				const triage = await getTriageStatus(ctx.client, ctx.config, caps, tid);
 				const banner = degradationNote(caps);
@@ -224,7 +229,8 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 		},
 		async ({ pid }) => {
 			try {
-				const { post, topic } = await getPost(ctx.client, pid);
+				const caps = await ctx.capabilities.get();
+				const { post, topic } = await getPost(ctx.client, pid, { qna: isUsable(caps.qna) });
 				const lines: string[] = [];
 				if (topic) lines.push(formatTopicSummary(topic), '');
 				lines.push(
@@ -304,7 +310,10 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 		},
 		async ({ source, cid, limit, page }) => {
 			try {
-				const { topics, source: usedSource } = await listTopics(ctx.client, { source, cid, limit, page });
+				const caps = await ctx.capabilities.get();
+				const { topics, source: usedSource } = await listTopics(ctx.client, {
+					source, cid, limit, page, qna: isUsable(caps.qna),
+				});
 				if (!topics.length) {
 					return text(`No topics found in ${usedSource}.`);
 				}

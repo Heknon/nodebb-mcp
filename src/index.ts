@@ -24,7 +24,7 @@ async function main(): Promise<void> {
 	} catch (err) {
 		if (err instanceof ConfigError) {
 			log(`configuration error: ${err.message}`);
-			log('Required: NODEBB_URL. Optional: NODEBB_API_TOKEN, NODEBB_UID, NODEBB_TIMEOUT_MS.');
+			log('Required: NODEBB_URL. Optional: NODEBB_API_TOKEN, NODEBB_UID, NODEBB_ENABLE_WRITES, NODEBB_TIMEOUT_MS.');
 			process.exit(78); // EX_CONFIG
 		}
 		throw err;
@@ -33,7 +33,8 @@ async function main(): Promise<void> {
 	const { server, capabilities } = await buildServer(config);
 
 	await server.connect(new StdioServerTransport());
-	log(`v${SERVER_VERSION} ready, serving ${config.url}${config.token ? ' (authenticated)' : ' (anonymous)'}`);
+	log(`v${SERVER_VERSION} ready, serving ${config.url}${config.token ? ' (token configured)' : ' (anonymous)'}` +
+		`${config.enableWrites ? ', writes enabled' : ', read-only'}`);
 
 	// Warm the capability cache so the first tool call is not paying for the
 	// probe sweep. Failure here is not fatal: tools re-probe and report.
@@ -49,7 +50,11 @@ async function main(): Promise<void> {
 				caps.qna.state === 'available' ? 'qna' : null,
 				caps.shotef.state === 'available' ? 'shotef' : null,
 			].filter(Boolean);
-			log(`connected to ${caps.forum.title ?? config.url}${caps.forum.version ? ` (NodeBB ${caps.forum.version})` : ''}`);
+			log(`connected to ${caps.forum.title ?? config.url} as ${caps.forum.authenticated
+				? `${caps.forum.username ?? 'uid'} (uid ${caps.forum.uid})`
+				: 'guest'}`);
+			if (caps.forum.authProblem) log(`warning: ${caps.forum.authProblem}`);
+			if (caps.shotef.warning) log(`warning: ${caps.shotef.warning}`);
 			log(live.length ? `optional features live: ${live.join(', ')}` : 'no optional features detected; running core-only');
 		})
 		.catch((err: unknown) => {

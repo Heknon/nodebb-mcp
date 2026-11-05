@@ -67,13 +67,13 @@ export async function listUnsolved(
 	if (isUsable(capabilities.qna)) {
 		const raw = await client.read<Raw>('/unsolved', { page: opts.page ?? 1 });
 		const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
-		return { topics: list.slice(0, limit).map(t => toTopicSummary(client, t)), degraded: false };
+		return { topics: list.slice(0, limit).map(t => toTopicSummary(client, t, true)), degraded: false };
 	}
 
 	const raw = await client.read<Raw>('/recent', { page: opts.page ?? 1 });
 	const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
 	const unanswered = list
-		.map(t => toTopicSummary(client, t))
+		.map(t => toTopicSummary(client, t, false))
 		// postcount 1 means the opening post and nothing else.
 		.filter(t => t.postcount <= 1)
 		.slice(0, limit);
@@ -100,7 +100,7 @@ export async function listSolved(
 	const raw = await client.read<Raw>('/solved', { page: opts.page ?? 1 });
 	const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
 	return {
-		topics: list.slice(0, Math.min(opts.limit ?? 20, 50)).map(t => toTopicSummary(client, t)),
+		topics: list.slice(0, Math.min(opts.limit ?? 20, 50)).map(t => toTopicSummary(client, t, true)),
 		available: true,
 	};
 }
@@ -127,7 +127,7 @@ export async function getBestAnswer(
 	tid: number,
 	maxPosts: number,
 ): Promise<AnswerResult> {
-	const topic = await getTopic(client, tid, { maxPosts });
+	const topic = await getTopic(client, tid, { maxPosts, qna: isUsable(capabilities.qna) });
 	const replies = topic.posts.filter(post => (post.index ?? 0) > 0);
 
 	const accepted = topic.posts.find(post => post.isAcceptedAnswer);

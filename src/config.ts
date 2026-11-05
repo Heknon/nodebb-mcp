@@ -26,6 +26,11 @@ export interface Config {
 	capabilityTtlMs: number;
 	/** Max posts pulled per topic read. */
 	maxPostsPerTopic: number;
+	/**
+	 * Register the write tools (posting, voting, triage actions). Off by default:
+	 * anything written is immediately visible to the forum's users.
+	 */
+	enableWrites: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -62,6 +67,14 @@ export function normalizeUrl(raw: string): string {
 	return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
 }
 
+function boolFromEnv(env: NodeJS.ProcessEnv, name: string): boolean {
+	const raw = env[name]?.trim().toLowerCase();
+	if (!raw) return false;
+	if (['1', 'true', 'yes', 'on'].includes(raw)) return true;
+	if (['0', 'false', 'no', 'off'].includes(raw)) return false;
+	throw new ConfigError(`${name} must be true/false (or 1/0), got ${JSON.stringify(env[name])}`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const url = env.NODEBB_URL?.trim();
 	if (!url) {
@@ -81,5 +94,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		shotefNamespace: env.NODEBB_SHOTEF_NAMESPACE?.trim() || 'shotef',
 		capabilityTtlMs: intFromEnv(env, 'NODEBB_CAPABILITY_TTL_MS', 300_000, 0, 86_400_000),
 		maxPostsPerTopic: intFromEnv(env, 'NODEBB_MAX_POSTS_PER_TOPIC', 50, 1, 200),
+		enableWrites: boolFromEnv(env, 'NODEBB_ENABLE_WRITES'),
 	};
 }

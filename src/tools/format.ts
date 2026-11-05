@@ -26,11 +26,15 @@ export function failure(body: string): ToolResult {
 	return { content: [{ type: 'text', text: body }], isError: true };
 }
 
-/** Turn any thrown value into an explanation a caller can act on. */
-export function toolError(action: string, err: unknown): ToolResult {
+/**
+ * Turn any thrown value into an explanation a caller can act on. `advise` maps
+ * the forum's message to plugin-specific advice (e.g. Shotef refusals).
+ */
+export function toolError(action: string, err: unknown, advise?: (message?: string) => string | undefined): ToolResult {
 	if (err instanceof NodeBBError) {
-		const parts = [`Could not ${action}: ${err.message}`, err.hint];
-		if (err.forumMessage) parts.splice(1, 0, `Forum said: ${err.forumMessage}`);
+		const parts = [`Could not ${action}: ${err.message}`];
+		if (err.forumMessage && !err.message.includes(err.forumMessage)) parts.push(`Forum said: ${err.forumMessage}`);
+		parts.push(advise?.(err.forumMessage) ?? err.hint);
 		return failure(parts.join('\n'));
 	}
 	return failure(`Could not ${action}: ${err instanceof Error ? err.message : String(err)}`);
@@ -67,9 +71,25 @@ export function formatTopicSummary(topic: TopicSummary): string {
 	return `**#${topic.tid} ${topic.title}**\n${facts.join(' · ')}\n${topic.url}`;
 }
 
+/**
+ * Stage names for someone *reading about* a ticket. Shotef's own labels are
+ * written for the reporter ("Awaiting your reply"), which reads as an
+ * instruction to whoever sees it — wrong in an investigation brief.
+ */
+const STAGE_LABELS: Record<string, string> = {
+	received: 'Received — not picked up yet',
+	in_progress: 'In progress',
+	answered: 'Answered — waiting on the reporter',
+	closed: 'Closed',
+};
+
+export function stageLabel(status: string | undefined, fallback?: string): string {
+	return (status && STAGE_LABELS[status]) || fallback || status || 'tracked';
+}
+
 export function formatTriage(status: TriageStatus | undefined): string {
 	if (!status || !status.available || !status.tracked) return '';
-	const bits = [status.label ?? status.status ?? 'tracked'];
+	const bits = [stageLabel(status.status, status.label)];
 	if (status.teamName) bits.push(`handled by ${status.teamName}`);
 	if (status.parked) bits.push(status.holdReason ? `on hold (${status.holdReason})` : 'on hold');
 	if (status.closeReason === 'no_response') bits.push('closed: no reply from reporter');

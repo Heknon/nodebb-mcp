@@ -52,11 +52,16 @@ function toTags(raw: unknown): string[] {
 }
 
 /**
- * Q&A state, only when the plugin actually decorated the payload. `isQuestion`
- * is absent on a forum without the plugin, which is how we tell "not a question"
- * apart from "this forum has no questions".
+ * Q&A state, only when the plugin is live *and* the topic carries it.
+ *
+ * The plugin keeps its state as plain topic-hash fields, and NodeBB returns
+ * every hash field on every topic read — so after the plugin is deactivated or
+ * uninstalled, `isSolved`/`solvedPid` keep arriving. That state is stale (no one
+ * can see or change it any more), so it is only trusted while the plugin runs.
+ * Callers say whether it does; see the `qna` capability.
  */
-function toQna(raw: Raw): TopicSummary['qna'] {
+function toQna(raw: Raw, qnaActive: boolean): TopicSummary['qna'] {
+	if (!qnaActive) return undefined;
 	const hasQna = 'isQuestion' in raw || 'isSolved' in raw;
 	if (!hasQna) return undefined;
 	const solvedPid = num(raw.solvedPid, 0);
@@ -67,7 +72,7 @@ function toQna(raw: Raw): TopicSummary['qna'] {
 	};
 }
 
-export function toTopicSummary(client: NodeBBClient, raw: Raw): TopicSummary {
+export function toTopicSummary(client: NodeBBClient, raw: Raw, qnaActive: boolean): TopicSummary {
 	const tid = num(raw.tid);
 	const slug = typeof raw.slug === 'string' ? raw.slug : undefined;
 	const category = (raw.category ?? {}) as Raw;
@@ -87,11 +92,11 @@ export function toTopicSummary(client: NodeBBClient, raw: Raw): TopicSummary {
 		tags: toTags(raw.tags),
 		locked: bool(raw.locked),
 		deleted: bool(raw.deleted),
-		qna: toQna(raw),
+		qna: toQna(raw, qnaActive),
 	};
 }
 
-function toPost(client: NodeBBClient, raw: Raw, tid: number, slug?: string): PostItem {
+function toPost(client: NodeBBClient, raw: Raw, tid: number, slug: string | undefined, qnaActive: boolean): PostItem {
 	const pid = num(raw.pid);
 	const index = num(raw.index, 0);
 	const content = htmlToText(typeof raw.content === 'string' ? raw.content : '');
@@ -106,15 +111,36 @@ function toPost(client: NodeBBClient, raw: Raw, tid: number, slug?: string): Pos
 		content,
 		url: postUrl(client, tid, slug, index),
 		// `isAnswer` is set by the Q&A plugin's filter:topic.getPosts hook.
-		...(('isAnswer' in raw) ? { isAcceptedAnswer: bool(raw.isAnswer) } : {}),
+		...(qnaActive && ('isAnswer' in raw) ? { isAcceptedAnswer: bool(raw.isAnswer) } : {}),
 	};
+}
+
+/**
+ * The Q&A plugin's filter:topic.getPosts hook *inserts a copy* of the accepted
+ * answer right after the opening post (flagged `navigatorIgnore`/`allowDupe`)
+ * whenever the answer is not already the first reply, so the thread page can
+ * show it on top. A reader must not see that post twice or out of order: keep
+ * each pid once, in thread order.
+ */
+function dedupePosts(rawPosts: Raw[]): Raw[] {
+	const seen = new Set<number>();
+	const kept: Raw[] = [];
+	// Originals before injected copies, so the copy is the one dropped.
+	const ordered = [...rawPosts].sort((a, b) => Number(bool(a.navigatorIgnore)) - Number(bool(b.navigatorIgnore)));
+	for (const post of ordered) {
+		const pid = num(post?.pid);
+		if (!pid || seen.has(pid)) continue;
+		seen.add(pid);
+		kept.push(post);
+	}
+	return kept.sort((a, b) => num(a.index) - num(b.index));
 }
 
 /** One topic with its posts. */
 export async function getTopic(
 	client: NodeBBClient,
 	tid: number,
-	opts: { maxPosts: number; page?: number } = { maxPosts: 50 },
+	opts: { maxPosts: number; page?: number; qna: boolean },
 ): Promise<TopicDetail> {
 	const raw = await client.read<Raw>(`/topic/${tid}`, opts.page ? { page: opts.page } : undefined);
 	if (!raw || !raw.tid) {
@@ -123,11 +149,11 @@ export async function getTopic(
 		});
 	}
 
-	const summary = toTopicSummary(client, raw);
+	const summary = toTopicSummary(client, raw, opts.qna);
 	const rawPosts: Raw[] = Array.isArray(raw.posts) ? raw.posts : [];
 	const solvedPid = summary.qna?.solvedPid;
 
-	let posts = rawPosts.map(post => toPost(client, post, summary.tid, summary.slug));
+	let posts = dedupePosts(rawPosts).map(post => toPost(client, post, summary.tid, summary.slug, opts.qna));
 
 	// Backstop: if the plugin flagged the topic but not the post (older versions
 	// decorate only the page build), mark the accepted answer from solvedPid.
@@ -146,25 +172,39 @@ export async function getTopic(
 	};
 }
 
-/** A single post, with the topic it belongs to. */
-export async function getPost(client: NodeBBClient, pid: number): Promise<{ post: PostItem; topic?: TopicSummary }> {
-	const raw = await client.v3<Raw>(`/posts/${pid}`);
+/**
+ * A single post, with the topic it belongs to.
+ *
+ * `/api/v3/posts/:pid` returns raw markdown and no author object, so read the
+ * `/summary` variant (rendered HTML, `user`, Q&A-decorated `topic`), and mark
+ * the post as the accepted answer when it is the topic's `solvedPid`.
+ */
+export async function getPost(
+	client: NodeBBClient,
+	pid: number,
+	opts: { qna: boolean },
+): Promise<{ post: PostItem; topic?: TopicSummary }> {
+	let raw = await client.v3<Raw>(`/posts/${pid}/summary`, undefined, true).catch(() => undefined);
+	if (!raw?.pid) raw = await client.v3<Raw>(`/posts/${pid}`, undefined, true);
 	if (!raw || !raw.pid) {
 		throw new NodeBBError('not-found', `Post ${pid} was not found or is not readable.`, {
 			path: `/api/v3/posts/${pid}`,
 		});
 	}
-	const tid = num(raw.tid);
+	const tid = num(raw.tid, num(raw.topic?.tid));
 	let topic: TopicSummary | undefined;
 	if (tid) {
 		try {
 			const rawTopic = await client.v3<Raw>(`/topics/${tid}`, undefined, true);
-			if (rawTopic?.tid) topic = toTopicSummary(client, rawTopic);
+			if (rawTopic?.tid) topic = toTopicSummary(client, rawTopic, opts.qna);
 		} catch {
 			// The post is still useful without its topic header.
 		}
 	}
-	return { post: toPost(client, raw, tid, topic?.slug), topic };
+	const post = toPost(client, raw, tid, topic?.slug, opts.qna);
+	post.url = client.link(`/post/${pid}`);
+	if (topic?.qna?.solvedPid === pid) post.isAcceptedAnswer = true;
+	return { post, topic };
 }
 
 /** Category tree. */
@@ -189,7 +229,7 @@ export async function listCategories(client: NodeBBClient): Promise<CategoryNode
 /** Topic listings: recent / popular / top / unread, optionally within a category. */
 export async function listTopics(
 	client: NodeBBClient,
-	opts: { source?: TopicListSource; cid?: number; page?: number; limit?: number } = {},
+	opts: { source?: TopicListSource; cid?: number; page?: number; limit?: number; qna: boolean },
 ): Promise<{ topics: TopicSummary[]; source: string }> {
 	const { source = 'recent', cid, page = 1, limit = 20 } = opts;
 
@@ -198,7 +238,7 @@ export async function listTopics(
 	const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
 
 	return {
-		topics: list.slice(0, limit).map(topic => toTopicSummary(client, topic)),
+		topics: list.slice(0, limit).map(topic => toTopicSummary(client, topic, opts.qna)),
 		source: cid ? `category ${cid}` : source,
 	};
 }
@@ -215,6 +255,8 @@ export interface SearchParams {
 	withinDays?: number;
 	page?: number;
 	limit?: number;
+	/** Whether the Q&A plugin is live (its decorations are trusted only then). */
+	qna: boolean;
 }
 
 /**
@@ -245,7 +287,16 @@ export async function search(
 			: {}),
 	});
 
-	const list: Raw[] = Array.isArray(raw?.posts) ? raw.posts : [];
+	// dbsearch can return the same post more than once (it matched on both the
+	// title and the body); keep the first, which is the better-ranked one.
+	const seen = new Set<number>();
+	const rawPosts: Raw[] = Array.isArray(raw?.posts) ? raw.posts : [];
+	const list: Raw[] = rawPosts.filter((post) => {
+		const pid = num(post?.pid);
+		if (!pid || seen.has(pid)) return false;
+		seen.add(pid);
+		return true;
+	});
 	const hits: SearchHit[] = list.slice(0, limit).map((post, position) => {
 		const topic = (post.topic ?? {}) as Raw;
 		const category = (post.category ?? {}) as Raw;
@@ -257,21 +308,25 @@ export async function search(
 			pid: num(post.pid),
 			tid,
 			title: decodeTitle(topic.title, `Topic #${tid}`),
-			url: postUrl(client, tid, slug, num(post.index, 0)),
+			// Search summaries carry no index; /post/:pid is NodeBB's permalink.
+			url: 'index' in post ? postUrl(client, tid, slug, num(post.index, 0)) : client.link(`/post/${num(post.pid)}`),
 			categoryName: decodeTitle(category.name) || undefined,
 			author: toAuthor(post.user as Raw),
 			timestamp: num(post.timestamp) || undefined,
 			snippet: snippetAround(text, params.query),
 			// The forum ranked these; preserve that order as a descending score.
 			score: list.length > 1 ? 1 - position / list.length : 1,
-			// Set by the Q&A plugin's filter:post.getPostSummaryByPids hook.
-			...(('isSolved' in topic) ? { isSolved: bool(topic.isSolved) } : {}),
+			// Set by the Q&A plugin's filter:post.getPostSummaryByPids hook — for every
+			// hit, as parseInt() of the topic field, so a non-question arrives as null.
+			// Only a question can be solved or unsolved.
+			...(params.qna && bool(topic.isQuestion) ? { isSolved: bool(topic.isSolved) } : {}),
 		};
 	});
 
 	return {
 		hits,
-		matchCount: num(raw?.matchCount, hits.length),
+		// The forum's count includes the duplicates dropped above.
+		matchCount: Math.max(hits.length, num(raw?.matchCount, hits.length) - (rawPosts.length - list.length)),
 		pageCount: num(raw?.pageCount, 1),
 	};
 }
@@ -285,4 +340,75 @@ export function formatTopicLine(topic: TopicSummary): string {
 	if (topic.qna?.isQuestion) bits.push(topic.qna.isSolved ? 'SOLVED' : 'unsolved');
 	if (topic.locked) bits.push('locked');
 	return `#${topic.tid} ${truncate(topic.title, 110)}\n  ${bits.join(' · ')}\n  ${topic.url}`;
+}
+
+/* ------------------------------------------------------------------ writes */
+
+export interface WriteResult {
+	tid: number;
+	pid: number;
+	url: string;
+	title?: string;
+}
+
+/** Create a topic. With the Q&A plugin, `asQuestion` makes it a question. */
+export async function createTopic(
+	client: NodeBBClient,
+	input: { cid: number; title: string; content: string; tags?: string[]; asQuestion?: boolean },
+): Promise<WriteResult> {
+	const raw = await client.write<Raw>('POST', '/topics', {
+		cid: input.cid,
+		title: input.title,
+		content: input.content,
+		...(input.tags?.length ? { tags: input.tags } : {}),
+		// The Q&A plugin's filter:topic.create only checks that the key exists.
+		...(input.asQuestion ? { isQuestion: 1 } : {}),
+	});
+	const tid = num(raw?.tid);
+	return {
+		tid,
+		pid: num(raw?.mainPid),
+		title: decodeTitle(raw?.title, input.title),
+		url: topicUrl(client, tid, typeof raw?.slug === 'string' ? raw.slug : undefined),
+	};
+}
+
+/** Reply to a topic, optionally quoting/answering a specific post. */
+export async function replyToTopic(
+	client: NodeBBClient,
+	input: { tid: number; content: string; toPid?: number },
+): Promise<WriteResult> {
+	const raw = await client.write<Raw>('POST', `/topics/${input.tid}`, {
+		content: input.content,
+		...(input.toPid ? { toPid: input.toPid } : {}),
+	});
+	const pid = num(raw?.pid);
+	return { tid: num(raw?.tid, input.tid), pid, url: client.link(`/post/${pid}`) };
+}
+
+/** Edit a post's body (and, for a topic's first post, its title). */
+export async function editPost(
+	client: NodeBBClient,
+	input: { pid: number; content: string; title?: string },
+): Promise<WriteResult> {
+	const raw = await client.write<Raw>('PUT', `/posts/${input.pid}`, {
+		content: input.content,
+		...(input.title ? { title: input.title } : {}),
+	});
+	const post = (raw?.post ?? raw ?? {}) as Raw;
+	return { tid: num(post.tid ?? raw?.topic?.tid), pid: input.pid, url: client.link(`/post/${input.pid}`) };
+}
+
+/** Up/down-vote a post, or withdraw a vote. Returns the post's new score. */
+export async function votePost(
+	client: NodeBBClient,
+	input: { pid: number; vote: 'up' | 'down' | 'none' },
+): Promise<{ votes?: number }> {
+	if (input.vote === 'none') {
+		await client.write('DELETE', `/posts/${input.pid}/vote`);
+	} else {
+		await client.write('PUT', `/posts/${input.pid}/vote`, { delta: input.vote === 'up' ? 1 : -1 });
+	}
+	const after = await client.v3<Raw>(`/posts/${input.pid}`, undefined, true).catch(() => undefined);
+	return after && 'votes' in after ? { votes: num(after.votes) } : {};
 }

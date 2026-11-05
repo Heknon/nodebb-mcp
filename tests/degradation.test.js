@@ -12,7 +12,7 @@ import { connect } from './mcp-harness.js';
 
 async function bareForum(t, plugins = { search: false, qna: false, shotef: false }) {
 	const forum = await startFakeForum({ plugins });
-	const mcp = await connect(forum.url);
+	const mcp = await connect(forum.url, { NODEBB_API_TOKEN: 'admin-token' });
 	t.after(async () => {
 		await mcp.close();
 		await forum.close();
@@ -166,4 +166,20 @@ test('Shotef alone still reports triage without search or Q&A', async (t) => {
 	const { mcp } = await bareForum(t, { search: false, qna: false, shotef: true });
 	const { text } = await mcp.call('get_triage_status', { tid: 11 });
 	assert.match(text, /\*\*Stage:\*\* In progress/);
+});
+
+test('stale Q&A fields left behind by a deactivated plugin are not trusted', async (t) => {
+	// The fake, like NodeBB, keeps serving isSolved/solvedPid from the topic hash.
+	const { mcp } = await bareForum(t, { search: true, qna: false, shotef: false });
+
+	const answer = await mcp.call('get_topic_answer', { tid: 10 });
+	assert.ok(!answer.text.includes('## Answer (accepted answer)'), answer.text);
+	assert.match(answer.text, /most-upvoted reply \(not marked accepted\)/);
+
+	const topic = await mcp.call('get_topic', { tid: 10 });
+	assert.ok(!topic.text.includes('ACCEPTED ANSWER'));
+	assert.ok(!/\*\*solved\*\*/.test(topic.text));
+
+	const post = await mcp.call('get_post', { pid: 102 });
+	assert.ok(!post.text.includes('ACCEPTED ANSWER'));
 });

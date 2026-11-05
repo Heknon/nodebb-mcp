@@ -94,6 +94,7 @@ export async function gatherCandidates(
 			tags: opts.tags,
 			withinDays: opts.withinDays,
 			limit,
+			qna: isUsable(capabilities.qna),
 		});
 
 		if (!hits.length) {
@@ -141,6 +142,7 @@ export async function gatherCandidates(
 				cid: source.cid,
 				page: source.page,
 				limit: 50,
+				qna: isUsable(capabilities.qna),
 			});
 			return topics;
 		} catch {
@@ -276,10 +278,11 @@ export async function investigate(
 /** A topic's opening post, for stating the problem in the caller's own terms. */
 export async function getOpeningPost(
 	client: NodeBBClient,
+	capabilities: Capabilities,
 	tid: number,
 	maxPosts: number,
 ): Promise<{ topic: TopicSummary; opening?: PostItem }> {
-	const topic = await getTopic(client, tid, { maxPosts: Math.min(maxPosts, 5) });
+	const topic = await getTopic(client, tid, { maxPosts: Math.min(maxPosts, 5), qna: isUsable(capabilities.qna) });
 	const opening = topic.posts.find(post => (post.index ?? 0) === 0) ?? topic.posts[0];
 	return { topic, opening };
 }

@@ -218,7 +218,25 @@ deploys from.
 **Fix:** ship to the deployed branch; then the deploy checkout still needs
 `git pull` **and** `./nodebb build && ./nodebb restart` to run the new code.
 
-## 16. The harmless one: web-push VAPID warning on localhost
+## 16. Plugin API routes ignore API tokens (bare `router.get`)
+
+**Symptom:** a script or integration calling `/api/v3/plugins/<id>/…` with a
+valid `Authorization: Bearer` token is treated as a guest: `req.uid` is 0,
+team-gated reads come back empty or 403, admin routes refuse an admin token.
+Cookie sessions work fine, so the browser UI looks healthy.
+**Cause:** the router handed to `static:api.routes` is a plain express router.
+Token authentication lives in `middleware.authenticateRequest`, which only
+`routeHelpers.setupApiRoute` attaches. A bare `router.get(...)` skips it — and,
+for cookie sessions, skips the CSRF check on writes too.
+**Fix:** register every API route with
+`routeHelpers.setupApiRoute(router, verb, path, [], controller)`. Expose a
+`GET /ping` returning `{ ok: 1, uid: req.uid || 0 }`: with a token set, `uid: 0`
+means the token was not honoured. (Seen in shotef ≤ 0.2.0: an admin token got
+`uid 0` from `/ping` and 403 from `/teams`.)
+Related: NodeBB itself never *rejects* an unknown token — it serves the request
+as a guest. Check `/api/config` → `uid` to verify a token actually works.
+
+## 17. The harmless one: web-push VAPID warning on localhost
 
 `nodebb-plugin-web-push` logs a VAPID/HTTPS error on `http://localhost`. It's in
 `noErrorHooks`, so it does **not** block your plugin's routes. Ignore it.

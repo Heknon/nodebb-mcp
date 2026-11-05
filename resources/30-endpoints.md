@@ -67,15 +67,27 @@ function wrap(fn) {
   };
 }
 
+const routeHelpers = nbb('./src/routes/helpers');
+
 plugin.apiRoutes = async function ({ router }) {
+  // setupApiRoute, never a bare router.get: it attaches authenticateRequest,
+  // which resolves API tokens to req.uid (and CSRF-checks cookie writes).
+  const route = (verb, path, fn) => routeHelpers.setupApiRoute(router, verb, path, [], wrap(fn));
   // auth is enforced inside each controller (req.uid / admin check)
-  router.get('/example/board', wrap(controllers.apiBoard));
-  router.get('/example/thing/:id', wrap(controllers.apiGetThing));
-  router.put('/example/thing/:id', wrap(controllers.apiSaveThing));
-  router.delete('/example/thing/:id', wrap(controllers.apiDeleteThing));
-  router.post('/example/thing/:id/action', wrap(controllers.apiAction));
+  route('get', '/example/board', controllers.apiBoard);
+  route('get', '/example/thing/:id', controllers.apiGetThing);
+  route('put', '/example/thing/:id', controllers.apiSaveThing);
+  route('delete', '/example/thing/:id', controllers.apiDeleteThing);
+  route('post', '/example/thing/:id/action', controllers.apiAction);
 };
 ```
+
+**A bare `router.get(...)` here silently ignores API tokens** — the browser works
+(cookie session) while every script or integration is a guest. See gotchas #16.
+If anything other than the browser will drive your plugin, also expose its
+socket actions as routes: sockets authenticate only by session cookie. Delegate
+to the socket handler with `{ uid: req.uid }` so authorization lives in one
+place (shotef's `lib/api.js` is a worked example).
 
 Always respond through `formatApiResponse(status, res, payloadOrError)` — it
 produces NodeBB's standard `{ status, response }` envelope that the client
@@ -91,8 +103,9 @@ Controllers.apiGetTeams = async function (req, res) {
 };
 ```
 
-A trivial `GET /ping` returning `{ ok: 1, uid: req.uid }` is worth adding — it is
-the fastest way to confirm the plugin is actually loaded and the router mounted.
+A trivial `GET /ping` returning `{ ok: 1, uid: req.uid || 0 }` is worth adding — it
+is the fastest way to confirm the plugin is loaded, the router mounted, and an
+API token actually honoured (`uid: 0` with a token set means it was not).
 
 ### Calling the API from the browser
 

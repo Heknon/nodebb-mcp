@@ -1,10 +1,13 @@
 # nodebb-mcp
 
-An MCP server for **investigating issues and finding answers on a NodeBB forum**.
+An MCP server for **investigating issues, finding answers, and working support
+tickets on a NodeBB forum**.
 
 Point it at a forum and it searches the forum's own history, extracts the answers
 that already exist, and says what is still open — so a question gets answered from
-what the community already worked out rather than from guesswork.
+what the community already worked out rather than from guesswork. With writes
+enabled it can also act: post, reply, vote, and move tickets through a Shotef
+triage board.
 
 It integrates with two optional NodeBB plugins for sharper results, and **works
 without either of them**.
@@ -20,8 +23,9 @@ npm install && npm run build
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `NODEBB_URL` | yes | — | Forum root, e.g. `https://forum.example.com` (a subdirectory mount is fine) |
-| `NODEBB_API_TOKEN` | no | — | Bearer token from ACP → Settings → API Access. Without it the server sees only publicly readable content |
+| `NODEBB_API_TOKEN` | no | — | Bearer token from ACP → Settings → API Access. Without it the server is a guest: public content only, and no search (guests lack `search:content` by default) |
 | `NODEBB_UID` | no | — | Acting uid. Required when the token is a **master** token; ignored for user tokens |
+| `NODEBB_ENABLE_WRITES` | no | off | `1`/`true` registers the write tools. Off, nothing advertised can change the forum |
 | `NODEBB_TIMEOUT_MS` | no | `15000` | Per-request timeout |
 | `NODEBB_MAX_POSTS_PER_TOPIC` | no | `50` | Cap on posts pulled per topic |
 | `NODEBB_CAPABILITY_TTL_MS` | no | `300000` | How long plugin detection is cached |
@@ -65,21 +69,35 @@ Add it to an MCP client:
 | `list_categories` | Category tree with ids |
 | `list_recent_topics` | recent / popular / top / unread listings |
 
-**Triage**
+**Triage** (Shotef)
 
 | Tool | Does |
 | --- | --- |
 | `get_triage_status` | Is anyone working on this topic, and was it resolved |
-| `get_triage_board` | The team's board by workflow column |
+| `get_triage_board` | The team's board: active columns, parked backlog, intake; the status keys `update_ticket` takes |
+| `get_ticket` | A ticket in full for team members: status, owner, audit timeline, internal notes |
+
+**Writing** — only with `NODEBB_ENABLE_WRITES=1`, as the token's user
+
+| Tool | Does |
+| --- | --- |
+| `create_topic` | New topic, optionally as a Q&A question; lands on the owning team's board |
+| `reply_to_topic` | Public reply; reports the ticket move it caused (Shotef's ball-in-court routing) |
+| `edit_post` | Replace a post's body (and a first post's title) |
+| `vote_post` | Up / down / withdraw |
+| `update_ticket` | Any of: status (incl. close as resolved / no-response), claim / release / assign, priority, help-wanted, internal note — each reported separately |
+| `mark_solved` | Accept a reply as a question's answer (Q&A + Shotef) |
+| `pass_ticket` | Hand a ticket to another team |
 
 **Diagnostics**
 
 | Tool | Does |
 | --- | --- |
-| `forum_capabilities` | Which features are live on this forum, and what is missing |
+| `forum_capabilities` | Which features are live, who the forum says we are, and what is missing |
 
-Two prompts, `answer_forum_question` and `investigate_report`, encode the usual
-tool order for each workflow.
+Prompts encode the usual tool order for each workflow: `answer_forum_question`,
+`investigate_report`, and — with writes enabled — `work_ticket` (research,
+answer, accept, close).
 
 ## Optional integrations, and life without them
 
@@ -90,13 +108,29 @@ mistaken for a confident one.
 
 | Integration | Probe | With it | Without it |
 | --- | --- | --- | --- |
-| **Search plugin** (e.g. `nodebb-plugin-dbsearch`) | `GET /api/search` | Real relevance ranking over titles and post bodies | Falls back to scanning recent-topic listings and ranking titles by term overlap; says it can only see recent activity |
-| **`nodebb-plugin-question-and-answer`** | `GET /api/unsolved` | Author-**accepted** answers; a real unsolved queue; solved markers on results | Uses the most-upvoted reply, explicitly labelled *not marked accepted*; approximates the queue with reply-less topics |
-| **Shotef triage** | `GET /api/v3/plugins/shotef/ping` | Workflow stage, handling team, parked/closed reasons | Reports triage as unknowable here and points you at the thread itself |
+| **Search plugin** (`nodebb-plugin-dbsearch`, a NodeBB v4 default) | `/api/config` → `searchEnabled`, then `GET /api/search` for the privilege | Real relevance ranking over titles and post bodies | Falls back to scanning recent-topic listings and ranking titles by term overlap; says it can only see recent activity |
+| **`nodebb-plugin-question-and-answer`** | `/api/config` → `question-and-answer` key (else `GET /api/unsolved`) | Author-**accepted** answers; a real unsolved queue; solved markers; `mark_solved` | Uses the most-upvoted reply, explicitly labelled *not marked accepted*; approximates the queue with reply-less topics; ignores Q&A fields left behind on topics |
+| **Shotef triage** | `GET /api/v3/plugins/shotef/ping` | Workflow stage, team, board, tickets, and the triage write tools | Reports triage as unknowable here and points you at the thread itself |
 
 NodeBB core ships **no search of its own** — its search controller 404s unless a
 plugin listens on `filter:search.query` — which is why search is treated as
-optional rather than assumed.
+optional. Guests are refused search by default, so an anonymous server scans.
+
+**Identity is verified, not assumed.** NodeBB serves an invalid or revoked token
+as a *guest* rather than rejecting it, so `forum_capabilities` reports who the
+forum actually resolved (`/api/config` → `uid`) and flags a token that was not
+honoured, or a master token missing `NODEBB_UID`.
+
+**Shotef needs the HTTP ticket routes** (`/api/v3/plugins/shotef/tickets/…`,
+added alongside a fix that makes its routes honour API tokens at all). Older
+Shotef releases treat every token as a guest; `forum_capabilities` warns when it
+detects one.
+
+Writes follow the forum's permissions, not the server's: posting needs the
+user's NodeBB privileges, and every triage action is checked by Shotef (team
+membership; a manager to assign someone else; an unsolved question cannot be
+closed as resolved until an answer is accepted). A refusal comes back with the
+forum's reason and what to do about it.
 
 The rule the tools follow: an unconfirmed reply is never presented as an accepted
 answer. `find_answers` always labels its basis (`accepted answer`,
@@ -107,18 +141,33 @@ of guessing.
 ## Development
 
 ```bash
-npm run build     # compile to dist/
-npm test          # 67 tests, no forum required
-npm run check     # typecheck + tests
+npm run build      # compile to dist/
+npm test           # unit tests against a fake forum — no NodeBB needed
+npm run e2e        # end-to-end against a real NodeBB (provisions one if missing)
+npm run check      # build (tests import dist/) + unit tests
 ```
 
-Tests run against a fake NodeBB over real HTTP (`tests/fake-forum.js`) that
-reproduces the shapes that actually bite — HTML-escaped titles, rendered-HTML post
-bodies, the `{ status, response }` envelope, and a 404 on `/api/search` when no
-search plugin is installed. Plugins are switchable per test, so the degradation
-paths are exercised directly: `tests/degradation.test.js` runs the whole tool
-surface against a forum with none of them. `tests/tools.test.js` drives a real MCP
-client against a real server over an in-memory transport.
+**Unit tests** (`tests/*.test.js`) run a fake NodeBB over real HTTP
+(`tests/fake-forum.js`) that models v4.16 with dbsearch, Q&A and Shotef —
+including the quirks that bite: tokens NodeBB silently downgrades to guest, guests
+refused search, Q&A's duplicated accepted answer and its stale fields, dbsearch's
+duplicate hits, the Shotef board shape, stateful core and ticket writes. Plugins
+switch per test, so every degradation path runs; tool tests drive a real MCP
+client over an in-memory transport.
+
+**End-to-end tests** (`tests/e2e/`) launch the built server as separate stdio
+processes — one per forum identity — against a real NodeBB seeded through its
+own Write API (`e2e/seed.mjs`), so plugin hooks fire for real. The full-stack
+suites cover every read tool as admin, team member, outsider, guest, a bogus
+token and a master token, and walk one ticket through its life (created → claimed
+→ answered → refused while unsolved → solved → closed → found by `find_answers`).
+The core suite deactivates all three plugins on the same forum and checks the
+degradation. The fake forum is kept faithful to what the e2e suite observes;
+when they disagree, the real forum wins.
+
+`e2e/forum.sh` manages the forum (`provision`, `up`, `restart`, `status`,
+`plugins on|off`). See `CLAUDE.md` and `.claude/skills/nodebb-mcp-dev/` for the
+details.
 
 ## `resources/` — NodeBB plugin-authoring knowledge base
 
@@ -134,7 +183,7 @@ so the server can serve them verbatim.
 | `nodebb://plugin-dev/endpoints` | `30-endpoints.md` | Page routes, `/api/v3/plugins`, socket.io, realtime |
 | `nodebb://plugin-dev/data-layer` | `40-data-layer.md` | The `db` abstraction, key design, encoding, caching |
 | `nodebb://plugin-dev/client-acp-templates` | `50-client-acp-templates.md` | Client scripts, ACP modules, `.tpl`, languages, CSS |
-| `nodebb://plugin-dev/gotchas` | `60-gotchas.md` | 16 traps as symptom → cause → fix |
+| `nodebb://plugin-dev/gotchas` | `60-gotchas.md` | 17 traps as symptom → cause → fix |
 | `nodebb://plugin-dev/testing` | `70-testing.md` | `node:test` units, seeding, HTTP, Playwright |
 | `nodebb://plugin-dev/recipes` | `80-recipes.md` | Scaffolding, dev environment, reusable snippets |
 | `nodebb://plugin-dev/worked-example` | `90-worked-example.md` | Annotated tour of a real ~5,200-line plugin |

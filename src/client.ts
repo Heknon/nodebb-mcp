@@ -173,4 +173,12 @@ export class NodeBBClient {
 	v3<T = unknown>(path: string, query?: RequestOptions['query'], allowNotFound = false): Promise<T> {
 		return this.request<T>(`/api/v3${path}`, { query, allowNotFound });
 	}
+
+	/**
+	 * A mutating Write API call. Bearer auth is exempt from NodeBB's CSRF check,
+	 * and a master token's `_uid` rides on the query string like every other call.
+	 */
+	write<T = unknown>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
+		return this.request<T>(`/api/v3${path}`, { method, body: body ?? {} });
+	}
 }

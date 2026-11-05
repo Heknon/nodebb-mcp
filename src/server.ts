@@ -23,9 +23,16 @@ works when they are not:
   - question-and-answer  -> author-accepted answers, a real unsolved queue
   - shotef               -> triage status: is anyone working on this, was it resolved
 
-Call forum_capabilities to see which are live on this forum. When a feature is missing the
-tools degrade and say so in their output — treat that note as part of the answer, and never
-present an unconfirmed reply as an accepted one.`;
+Call forum_capabilities to see which are live on this forum, and who this server acts as.
+When a feature is missing the tools degrade and say so in their output — treat that note as
+part of the answer, and never present an unconfirmed reply as an accepted one.
+
+When the operator enabled writes (NODEBB_ENABLE_WRITES), the server can also act: create_topic,
+reply_to_topic, edit_post and vote_post on the forum, and — with Shotef — get_ticket,
+update_ticket, mark_solved and pass_ticket to work the triage board. Everything written is
+public to the forum's users at once: read the thread first, check find_answers for an existing
+answer before posting a new one, and keep team-only reasoning in update_ticket notes rather
+than public replies.`;
 
 export interface BuiltServer {
 	server: McpServer;
@@ -42,7 +49,7 @@ export async function buildServer(config: Config): Promise<BuiltServer> {
 	);
 
 	registerAllTools(server, { client, config, capabilities });
-	registerPrompts(server);
+	registerPrompts(server, config);
 	await registerResources(server);
 
 	return { server, capabilities };

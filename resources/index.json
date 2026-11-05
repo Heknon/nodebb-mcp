@@ -62,7 +62,7 @@
       "uri": "nodebb://plugin-dev/gotchas",
       "name": "nodebb-plugin-gotchas",
       "title": "Gotchas — the hours-eaters",
-      "description": "Sixteen traps as symptom → cause → fix: the HTML double-escape on titles, build js skipping templates and CSS, stale client bundles, server code cached in memory, npm install pruning the dev symlink, out-of-process writes hidden behind caches, top-level nbb() breaking unit tests, standalone script config crashes, async notification delivery, isActive cached at init, ACP define() resolving undefined, dark-skin token defaults, Redis dev data loss, EMFILE builds, and deploy-branch confusion.",
+      "description": "Seventeen traps as symptom → cause → fix: the HTML double-escape on titles, build js skipping templates and CSS, stale client bundles, server code cached in memory, npm install pruning the dev symlink, out-of-process writes hidden behind caches, top-level nbb() breaking unit tests, standalone script config crashes, async notification delivery, isActive cached at init, ACP define() resolving undefined, dark-skin token defaults, Redis dev data loss, EMFILE builds, deploy-branch confusion, and plugin API routes that silently ignore API tokens.",
       "mimeType": "text/markdown",
       "path": "60-gotchas.md",
       "keywords": ["gotchas", "debugging", "escaping", "double-escape", "build", "symlink", "cache", "EMFILE", "redis", "troubleshooting"]

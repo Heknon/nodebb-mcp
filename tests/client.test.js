@@ -35,7 +35,7 @@ test('read unwraps nothing and v3 unwraps the envelope', async (t) => {
 	const client = new NodeBBClient(configFor(forum.url));
 
 	const config = await client.read('/config');
-	assert.equal(config.version, '4.4.2');
+	assert.equal(config.siteTitle, 'Fake Forum');
 
 	// /api/v3/... is wrapped in { status, response } and must come back unwrapped.
 	const ping = await client.v3('/plugins/shotef/ping');
@@ -43,37 +43,42 @@ test('read unwraps nothing and v3 unwraps the envelope', async (t) => {
 	assert.equal(ping.status, undefined);
 });
 
-test('a bearer token is sent when configured', async (t) => {
-	const forum = await startFakeForum({ token: 'secret-token' });
+test('a bearer token is sent when configured, and the forum acts as its user', async (t) => {
+	const forum = await startFakeForum();
 	t.after(() => forum.close());
 
-	const authed = new NodeBBClient(configFor(forum.url, { NODEBB_API_TOKEN: 'secret-token' }));
-	await authed.read('/config');
-	assert.equal(forum.requests.at(-1).auth, 'Bearer secret-token');
+	const authed = new NodeBBClient(configFor(forum.url, { NODEBB_API_TOKEN: 'maintainer-token' }));
+	const config = await authed.read('/config');
+	assert.equal(forum.requests.at(-1).auth, 'Bearer maintainer-token');
+	assert.equal(config.uid, 8);
 
-	const anon = new NodeBBClient(configFor(forum.url));
-	await assert.rejects(() => anon.read('/config'), (err) => {
-		assert.ok(err instanceof NodeBBError);
-		assert.equal(err.kind, 'auth');
-		assert.match(err.hint, /NODEBB_API_TOKEN/);
-		return true;
-	});
+	// NodeBB does not reject an unknown token: the request quietly runs as a guest.
+	const wrong = new NodeBBClient(configFor(forum.url, { NODEBB_API_TOKEN: 'not-a-token' }));
+	const asGuest = await wrong.read('/config');
+	assert.equal(asGuest.uid, 0);
 });
 
 test('NODEBB_UID is sent as _uid, satisfying a master token', async (t) => {
-	const forum = await startFakeForum({ requireUid: true });
+	const forum = await startFakeForum();
 	t.after(() => forum.close());
 
-	const withoutUid = new NodeBBClient(configFor(forum.url));
-	await assert.rejects(() => withoutUid.read('/config'), /master-token-no-uid|HTTP 400/);
+	const withoutUid = new NodeBBClient(configFor(forum.url, { NODEBB_API_TOKEN: 'master-token' }));
+	// The Write API explains; the Read API just fails with a 500.
+	await assert.rejects(() => withoutUid.v3('/ping'), (err) => {
+		assert.equal(err.kind, 'bad-request');
+		assert.match(err.forumMessage, /master token was received without/);
+		return true;
+	});
+	await assert.rejects(() => withoutUid.read('/config'), /HTTP 500/);
 
-	const withUid = new NodeBBClient(configFor(forum.url, { NODEBB_UID: '1' }));
-	await withUid.read('/config');
+	const withUid = new NodeBBClient(configFor(forum.url, { NODEBB_API_TOKEN: 'master-token', NODEBB_UID: '1' }));
+	const config = await withUid.read('/config');
 	assert.equal(forum.requests.at(-1).query._uid, '1');
+	assert.equal(config.uid, 1);
 });
 
 test('array query params are sent in NodeBB bracket form', async (t) => {
-	const forum = await startFakeForum();
+	const forum = await startFakeForum({ guestSearch: true });
 	t.after(() => forum.close());
 	const client = new NodeBBClient(configFor(forum.url));
 
@@ -81,6 +86,17 @@ test('array query params are sent in NodeBB bracket form', async (t) => {
 	const last = forum.requests.at(-1);
 	assert.equal(last.query['categories[]'], '4'); // last wins in a flat map; both were sent
 	assert.equal(last.query.term, 'redis');
+});
+
+test('a guest write fails CSRF with a plain-text 403, mapped to an auth failure', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const client = new NodeBBClient(configFor(forum.url));
+	await assert.rejects(() => client.write('POST', '/topics', { cid: 1, title: 'x', content: 'y' }), (err) => {
+		assert.equal(err.kind, 'auth');
+		assert.equal(err.status, 403);
+		return true;
+	});
 });
 
 test('an HTML 404 maps to not-found, and allowNotFound yields undefined', async (t) => {

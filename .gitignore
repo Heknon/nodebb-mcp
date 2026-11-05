@@ -2,3 +2,4 @@ node_modules/
 dist/
 *.log
 .env
+e2e/.fixture*.json

@@ -11,27 +11,30 @@ function registryFor(url, env = {}) {
 	return { registry: new CapabilityRegistry(new NodeBBClient(config), config), config };
 }
 
-test('a fully equipped forum reports every feature available', async (t) => {
+test('a fully equipped forum reports every feature available, and who we are', async (t) => {
 	const forum = await startFakeForum();
 	t.after(() => forum.close());
 
-	const { registry } = registryFor(forum.url);
-	const caps = await registry.get();
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
 
 	assert.equal(caps.forum.reachable, true);
-	assert.equal(caps.forum.version, '4.4.2');
 	assert.equal(caps.forum.title, 'Fake Forum');
+	// NodeBB v4 does not put its version in /api/config; we must not invent one.
+	assert.equal(caps.forum.version, undefined);
+	assert.equal(caps.forum.authenticated, true);
+	assert.equal(caps.forum.uid, 1);
+	assert.equal(caps.forum.username, 'admin');
 	assert.equal(caps.search.state, 'available');
 	assert.equal(caps.qna.state, 'available');
 	assert.equal(caps.shotef.state, 'available');
+	assert.equal(caps.shotef.warning, undefined);
 });
 
 test('a bare forum reports each optional feature absent, with a reason', async (t) => {
 	const forum = await startFakeForum({ plugins: { search: false, qna: false, shotef: false } });
 	t.after(() => forum.close());
 
-	const { registry } = registryFor(forum.url);
-	const caps = await registry.get();
+	const caps = await registryFor(forum.url).registry.get();
 
 	assert.equal(caps.forum.reachable, true);
 	for (const key of ['search', 'qna', 'shotef']) {
@@ -41,16 +44,29 @@ test('a bare forum reports each optional feature absent, with a reason', async (
 	assert.match(caps.search.reason, /dbsearch/);
 	assert.match(caps.qna.reason, /question-and-answer/);
 	assert.match(caps.shotef.reason, /Shotef/);
+	// searchEnabled:false in /api/config answers the question without a search call.
+	assert.ok(!forum.requests.some(r => r.path === '/api/search'));
 });
 
 test('features are probed independently', async (t) => {
 	const forum = await startFakeForum({ plugins: { search: true, qna: false, shotef: true } });
 	t.after(() => forum.close());
 
-	const caps = await registryFor(forum.url).registry.get();
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
 	assert.equal(caps.search.state, 'available');
 	assert.equal(caps.qna.state, 'absent');
 	assert.equal(caps.shotef.state, 'available');
+});
+
+test('guests are refused search by default, and the reason says why', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+
+	const caps = await registryFor(forum.url).registry.get();
+	assert.equal(caps.forum.authenticated, false);
+	assert.equal(caps.search.state, 'forbidden');
+	assert.match(caps.search.reason, /guests lack the search:content privilege/);
+	assert.match(caps.search.reason, /NODEBB_API_TOKEN/);
 });
 
 test('an unreachable forum is reported, not thrown, and features stay unknown', async () => {
@@ -84,8 +100,8 @@ test('concurrent probes collapse into one sweep', async (t) => {
 	const [a, b, c] = await Promise.all([registry.get(), registry.get(), registry.get()]);
 	assert.equal(a.probedAt, b.probedAt);
 	assert.equal(b.probedAt, c.probedAt);
-	// One sweep is 4 calls: config, search, unsolved, ping.
-	assert.equal(forum.requests.length, 4, JSON.stringify(forum.requests.map(r => r.path)));
+	// One anonymous sweep is 3 calls: config (which also answers Q&A), search, ping.
+	assert.equal(forum.requests.length, 3, JSON.stringify(forum.requests.map(r => r.path)));
 });
 
 test('invalidate forces the next get to re-probe', async (t) => {
@@ -100,12 +116,71 @@ test('invalidate forces the next get to re-probe', async (t) => {
 	assert.ok(forum.requests.length > before);
 });
 
-test('a token that is rejected marks features forbidden rather than absent', async (t) => {
-	const forum = await startFakeForum({ token: 'right-token' });
+test('a token the forum does not recognise is caught, though NodeBB never rejects it', async (t) => {
+	const forum = await startFakeForum();
 	t.after(() => forum.close());
 
 	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'wrong-token' }).registry.get();
-	// The forum probe itself fails auth, so nothing downstream is claimed.
-	assert.equal(caps.forum.reachable, false);
-	assert.match(caps.forum.reason, /NODEBB_API_TOKEN/);
+	// NodeBB serves the request as a guest, so the forum is perfectly reachable…
+	assert.equal(caps.forum.reachable, true);
+	assert.equal(caps.forum.tokenConfigured, true);
+	// …but we must not claim to be authenticated.
+	assert.equal(caps.forum.authenticated, false);
+	assert.equal(caps.forum.uid, 0);
+	assert.match(caps.forum.authProblem, /not accepted/);
+	assert.match(caps.forum.authProblem, /silently/);
+});
+
+test('a master token without NODEBB_UID is explained, not reported as a server error', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'master-token' }).registry.get();
+	assert.equal(caps.forum.reachable, true);
+	assert.equal(caps.forum.authenticated, false);
+	assert.match(caps.forum.authProblem, /master token/);
+	assert.match(caps.forum.authProblem, /NODEBB_UID/);
+});
+
+test('a master token with NODEBB_UID acts as that user', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'master-token', NODEBB_UID: '8' }).registry.get();
+	assert.equal(caps.forum.authenticated, true);
+	assert.equal(caps.forum.uid, 8);
+	assert.equal(caps.forum.username, 'maintainer');
+	assert.ok(forum.requests.every(r => r.query._uid === '8'), 'every call must carry _uid');
+});
+
+test('a Shotef that ignores API tokens is flagged', async (t) => {
+	const forum = await startFakeForum({ shotefIgnoresTokens: true });
+	t.after(() => forum.close());
+
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(caps.shotef.state, 'available');
+	assert.match(caps.shotef.warning, /ignores API tokens/);
+});
+
+test('writes are off unless enabled, and need a real identity when they are', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+
+	const off = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(off.writes.state, 'absent');
+	assert.match(off.writes.reason, /NODEBB_ENABLE_WRITES/);
+
+	const guest = await registryFor(forum.url, { NODEBB_ENABLE_WRITES: '1' }).registry.get();
+	assert.equal(guest.writes.state, 'forbidden');
+
+	const badToken = await registryFor(forum.url, { NODEBB_ENABLE_WRITES: '1', NODEBB_API_TOKEN: 'nope' }).registry.get();
+	assert.equal(badToken.writes.state, 'forbidden');
+	assert.match(badToken.writes.reason, /not accepted/);
+
+	const on = await registryFor(forum.url, { NODEBB_ENABLE_WRITES: 'true', NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(on.writes.state, 'available');
+});
+
+test('NODEBB_ENABLE_WRITES rejects values that are not booleans', () => {
+	assert.throws(() => loadConfig({ NODEBB_URL: 'http://x', NODEBB_ENABLE_WRITES: 'maybe' }), /NODEBB_ENABLE_WRITES/);
 });

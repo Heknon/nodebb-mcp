@@ -6,7 +6,9 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
-export function registerPrompts(server: McpServer): void {
+import type { Config } from './config.js';
+
+export function registerPrompts(server: McpServer, config: Config): void {
 	server.registerPrompt(
 		'answer_forum_question',
 		{
@@ -60,6 +62,45 @@ export function registerPrompts(server: McpServer): void {
 							'(and whether it was confirmed), whether anyone is currently on it, and what the ' +
 							'reporter should be told. Call forum_capabilities and note the limitation if the ' +
 							'investigation ran degraded.',
+					},
+				},
+			],
+		}),
+	);
+
+	// Acting on a ticket only makes sense when the write tools exist.
+	if (!config.enableWrites) return;
+
+	server.registerPrompt(
+		'work_ticket',
+		{
+			title: 'Work a support ticket',
+			description: 'Take a triaged topic from report to resolution: research, answer, accept, close.',
+			argsSchema: {
+				tid: z.string().describe('Topic id of the ticket.'),
+			},
+		},
+		({ tid }) => ({
+			messages: [
+				{
+					role: 'user',
+					content: {
+						type: 'text',
+						text:
+							`Work support ticket #${tid} to resolution.\n\n` +
+							'1. get_ticket and get_topic — what is reported, what the team already tried (internal notes), ' +
+							'who owns it.\n' +
+							'2. update_ticket with owner "me" and status in_work if nobody has it; leave an internal note ' +
+							'with your plan.\n' +
+							'3. find_answers / investigate_issue for an existing fix. Cite the topics you rely on, and say ' +
+							'whether each answer was accepted or merely upvoted.\n' +
+							'4. reply_to_topic with the answer — public, so plain and self-contained; keep team-only ' +
+							'reasoning in update_ticket notes.\n' +
+							'5. When the reporter confirms it worked: mark_solved with the answering post, then ' +
+							'update_ticket status closed. If they went silent, close with close_reason no_response ' +
+							'(a reply reopens it). If it belongs to another team, pass_ticket with the reason.\n\n' +
+							'Stop and report back instead of guessing when the forum refuses an action — the refusal ' +
+							'says why.',
 					},
 				},
 			],
