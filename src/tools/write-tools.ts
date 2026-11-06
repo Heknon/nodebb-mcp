@@ -21,6 +21,7 @@ import type { Capabilities } from '../capabilities.js';
 import { isUsable } from '../capabilities.js';
 import { applyTicketAction, explainShotefError, getTriageStatus } from '../integrations/shotef.js';
 import { createTopic, editPost, replyToTopic, votePost } from '../nodebb/forum.js';
+import { categoryInput, withCategories } from './categories.js';
 import type { ToolContext } from './context.js';
 import { failure, formatTriage, text, toolError, type ToolResult } from './format.js';
 import { actingAs, triageBlocker } from './triage-actions.js';
@@ -51,7 +52,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 				'on that team\'s board automatically. Check with find_answers first that the topic does not ' +
 				'already exist — duplicate reports fragment the answers.',
 			inputSchema: {
-				cid: z.number().int().positive().describe('Category id (from list_categories).'),
+				cid: categoryInput.describe('The category: its id, or its exact name (case aside). A near miss is answered with the closest name, not posted to.'),
 				title: z.string().min(3).describe('Topic title.'),
 				content: z.string().min(1).describe('Body, in markdown.'),
 				tags: z.array(z.string().min(1)).optional().describe('Tags to attach.'),
@@ -59,7 +60,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 			},
 			annotations: WRITE,
 		},
-		async ({ cid, title, content, tags, as_question }) => {
+		withCategories(ctx, 'write', async ({ cid, title, content, tags, as_question }) => {
 			try {
 				const caps = await ctx.capabilities.get();
 				const blocked = writeBlocker(caps);
@@ -82,7 +83,7 @@ export function registerWriteTools(server: McpServer, ctx: ToolContext): void {
 			} catch (err) {
 				return toolError(`create the topic in category ${cid}`, err);
 			}
-		},
+		}),
 	);
 
 	server.registerTool(

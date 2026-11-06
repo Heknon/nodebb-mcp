@@ -21,10 +21,11 @@ import type { Capabilities } from '../capabilities.js';
 import { isUsable } from '../capabilities.js';
 import { NodeBBError } from '../errors.js';
 import {
-	applyTicketAction, explainShotefError, intakeTeamsFor, isShotefRefusal, openTicket, type TicketAction,
+	applyTicketAction, explainShotefError, findTeam, getBoard, intakeTeamsFor, isShotefRefusal, listTeams, openTicket, type TicketAction,
 } from '../integrations/shotef.js';
 import type { ToolContext } from './context.js';
-import { failure, stageLabel, text, toolError, type ToolResult } from './format.js';
+import { resolveName } from '../resolve.js';
+import { failure, nameProblem, stageLabel, text, toolError, type ToolResult } from './format.js';
 
 /** Changes the team's state, never public content; safe to repeat unless noted. */
 const TRIAGE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true } as const;
@@ -154,34 +155,70 @@ export function registerTriageActions(server: McpServer, ctx: ToolContext): void
 			title: 'Take, release or assign a ticket',
 			description:
 				'Set who owns a triage ticket: "me" to claim it, "nobody" to release it back to the queue, or a ' +
-				'team member\'s uid to assign it to them (team managers only). Members of the handling team only.',
+				'team member — by username or uid — to assign it to them (team managers only). Members of the ' +
+				'handling team only. Names must match exactly (case aside); a near miss is answered with the ' +
+				'closest name rather than acted on.',
 			inputSchema: {
 				tid: z.number().int().positive().describe('Topic id of the ticket.'),
 				owner: z
-					.union([z.enum(['me', 'nobody']), z.number().int().positive()])
-					.describe('"me", "nobody", or the uid of a member of the handling team.'),
+					.union([z.enum(['me', 'nobody']), z.number().int().positive(), z.string().min(1)])
+					.describe('"me", "nobody", or a member of the handling team: their username or uid.'),
 				team: z
 					.string()
 					.min(1)
 					.optional()
 					.describe(
-						'Only for a ticket in the intake lane (shared between teams, taken by none): the team the claim ' +
-							'takes it for. Found automatically when just one of your teams shares it.',
+						'Only for a ticket in the intake lane (shared between teams, taken by none): the team (id or ' +
+							'name) the claim takes it for. Found automatically when just one of your teams shares it.',
 					),
 			},
 			annotations: TRIAGE,
 		},
 		async ({ tid, owner, team }) => {
+			let teamId = team;
+			let assignee: { uid: number; username?: string } | undefined = typeof owner === 'number' ? { uid: owner } : undefined;
+			if (team || (typeof owner === 'string' && owner !== 'me' && owner !== 'nobody')) {
+				try {
+					const caps = await ctx.capabilities.get();
+					const blocked = triageBlocker(caps);
+					if (blocked) return blocked;
+					if (team) {
+						const { board, found } = await findTeam(ctx.client, ctx.config, caps, team);
+						const mine = found.kind === 'exact' && board.teams.some(entry => entry.id === found.item.id);
+						if (!mine) {
+							return failure(found.kind === 'exact'
+								? `${found.item.name} (\`${found.item.id}\`) is not one of your teams. Yours: ${listTeams(board.teams)}.`
+								: nameProblem('team of yours', team, found, item => listTeams([item]), item => `team: "${item.id}"`));
+						}
+						teamId = found.item.id;
+					}
+					if (typeof owner === 'string' && owner !== 'me' && owner !== 'nobody') {
+						const ticket = await openTicket(ctx.client, ctx.config, caps, tid);
+						const board = await getBoard(ctx.client, ctx.config, caps, teamId ?? ticket.team);
+						const members = board.members ?? [];
+						const found = resolveName(owner, members.map(member => ({ item: member, ids: [String(member.uid)], names: [member.username] })));
+						if (found.kind !== 'exact') {
+							const where = board.teamName ? ` of ${board.teamName}` : '';
+							return failure(nameProblem(`member${where}`, owner, found,
+								member => `${member.username} (uid ${member.uid})`, member => `owner: "${member.username}"`));
+						}
+						assignee = found.item;
+					}
+				} catch (err) {
+					return toolError(`assign ticket ${tid}`, err, explainShotefError);
+				}
+			}
+			const who = assignee ? (assignee.username ?? `uid ${assignee.uid}`) : '';
 			const action: TicketAction = owner === 'me'
-				? { kind: 'claim', teamId: team }
-				: owner === 'nobody' ? { kind: 'unclaim' } : { kind: 'assign', uid: owner, teamId: team };
+				? { kind: 'claim', teamId }
+				: owner === 'nobody' ? { kind: 'unclaim' } : { kind: 'assign', uid: assignee!.uid, teamId };
 			return runAction(ctx, tid, action, {
-				doing: owner === 'me' ? `claim ticket ${tid}` : owner === 'nobody' ? `release ticket ${tid}` : `assign ticket ${tid} to uid ${owner}`,
+				doing: owner === 'me' ? `claim ticket ${tid}` : owner === 'nobody' ? `release ticket ${tid}` : `assign ticket ${tid} to ${who}`,
 				done: caps => owner === 'me'
 					? `Claimed ticket #${tid} as ${actingAs(caps)}.`
 					: owner === 'nobody'
 						? `Released ticket #${tid} back to the queue.`
-						: `Assigned ticket #${tid} to uid ${owner} as ${actingAs(caps)}.`,
+						: `Assigned ticket #${tid} to ${who} as ${actingAs(caps)}.`,
 			});
 		},
 	);
@@ -243,17 +280,33 @@ export function registerTriageActions(server: McpServer, ctx: ToolContext): void
 			description:
 				'Hand a triage ticket to another team, with a reason. The other team\'s on-duty person is ' +
 				'notified, and your team keeps a read-only mirror. Use when an issue belongs to someone else ' +
-				'(e.g. billing vs. technical). Team ids are listed by get_triage_board.',
+				'(e.g. billing vs. technical). Name the team by id or name; a near miss is answered with the ' +
+				'closest team rather than acted on, since passing moves the ticket out of your queue.',
 			inputSchema: {
 				tid: z.number().int().positive().describe('Topic id of the ticket.'),
-				to_team: z.string().min(1).describe('Id of the receiving team.'),
+				to_team: z.string().min(1).describe('The receiving team: its id or its name (exact, case aside).'),
 				reason: z.string().optional().describe('Why it is being passed — shown to the receiving team.'),
 			},
 			annotations: TRIAGE,
 		},
-		async ({ tid, to_team, reason }) => runAction(ctx, tid, { kind: 'pass', toTeam: to_team, reason }, {
-			doing: `pass ticket ${tid} to ${to_team}`,
-			done: caps => `Passed ticket #${tid} to team ${to_team} as ${actingAs(caps)}.`,
-		}),
+		async ({ tid, to_team, reason }) => {
+			let target: { id: string; name: string };
+			try {
+				const caps = await ctx.capabilities.get();
+				const blocked = triageBlocker(caps);
+				if (blocked) return blocked;
+				const { found } = await findTeam(ctx.client, ctx.config, caps, to_team);
+				if (found.kind !== 'exact') {
+					return failure(nameProblem('team', to_team, found, item => listTeams([item]), item => `to_team: "${item.id}"`));
+				}
+				target = found.item;
+			} catch (err) {
+				return toolError(`pass ticket ${tid}`, err, explainShotefError);
+			}
+			return runAction(ctx, tid, { kind: 'pass', toTeam: target.id, reason }, {
+				doing: `pass ticket ${tid} to ${target.name}`,
+				done: caps => `Passed ticket #${tid} to ${target.name} (\`${target.id}\`) as ${actingAs(caps)}.`,
+			});
+		},
 	);
 }

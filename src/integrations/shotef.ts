@@ -20,6 +20,7 @@ import type { Capabilities } from '../capabilities.js';
 import { isUsable } from '../capabilities.js';
 import type { Config } from '../config.js';
 import { NodeBBError } from '../errors.js';
+import { resolveName, type Resolution } from '../resolve.js';
 import { decodeTitle } from '../text.js';
 
 type Raw = Record<string, any>;
@@ -155,9 +156,16 @@ export interface BoardColumn {
 export interface TriageBoard {
 	available: boolean;
 	reason?: string;
+	/** Set when the team asked for was found by a near match: what was typed and what it matched. */
+	matched?: string;
 	teamId?: string;
 	teamName?: string;
+	/** The viewer's own teams. */
 	teams: { id: string; name: string; selected?: boolean }[];
+	/** Every other team on the forum (Shotef's pass targets). */
+	otherTeams?: { id: string; name: string }[];
+	/** The team's members, for naming an assignee. */
+	members?: { uid: number; username: string }[];
 	columns: BoardColumn[];
 	items: BoardCard[];
 	/** Who is on duty (the "shotef") for this team, if anyone. */
@@ -208,6 +216,8 @@ export async function getBoard(
 	config: Config,
 	capabilities: Capabilities,
 	teamId?: string,
+	/** Internal: a team id already resolved from a name — never resolve again. */
+	resolved = false,
 ): Promise<TriageBoard> {
 	const empty: TriageBoard = { available: false, teams: [], columns: [], items: [] };
 	if (!isUsable(capabilities.shotef)) {
@@ -249,16 +259,34 @@ export async function getBoard(
 		name: decodeTitle(entry.name, String(entry.id)),
 		selected: Boolean(entry.selected),
 	}));
+	const others = (Array.isArray(raw.passTargets) ? raw.passTargets : [])
+		.map((entry: Raw) => ({ id: String(entry.id), name: decodeTitle(entry.name, String(entry.id)) }))
+		.filter((entry: { id: string }) => !visible.some(mine => mine.id === entry.id));
 
 	// Shotef answers an unknown or hidden team with the viewer's default team's
-	// board, silently. Never pass that off as the team asked for.
+	// board, silently. Never pass that off as the team asked for: find what was
+	// meant among the viewer's teams (a name, a near miss), or say why not.
+	let matched: string | undefined;
 	if (teamId && team.id !== undefined && String(team.id) !== teamId) {
-		// A team's name in place of its id: the board already served may be that team's.
-		const byName = visible.find(entry => entry.name.toLowerCase() === teamId.toLowerCase());
-		if (byName && byName.id !== String(team.id)) return getBoard(client, config, capabilities, byName.id);
-		if (!byName) {
-			const who = capabilities.forum.username ?? (capabilities.forum.uid ? `uid ${capabilities.forum.uid}` : 'a guest');
-			return { ...empty, available: true, teams: visible, reason: `No triage team "${teamId}" is visible to ${who}.` };
+		const who = capabilities.forum.username ?? (capabilities.forum.uid ? `uid ${capabilities.forum.uid}` : 'a guest');
+		if (resolved) {
+			return { ...empty, available: true, teams: visible, otherTeams: others, reason: `Shotef did not serve the board of team \`${teamId}\`.` };
+		}
+		const found = resolveName(teamId, visible.map(entry => ({ item: entry, ids: [entry.id], names: [entry.name] })));
+		if (found.kind === 'exact' || found.kind === 'guess') {
+			if (found.kind === 'guess') matched = `"${teamId}" → ${found.item.name} (\`${found.item.id}\`)`;
+			if (found.item.id !== String(team.id)) {
+				const board = await getBoard(client, config, capabilities, found.item.id, true);
+				return matched ? { ...board, matched } : board;
+			}
+		} else {
+			const elsewhere = resolveName(teamId, others.map((entry: { id: string; name: string }) => ({ item: entry, ids: [entry.id], names: [entry.name] })));
+			const reason = elsewhere.kind === 'exact' || elsewhere.kind === 'guess'
+				? `${who} is not on ${elsewhere.item.name} (\`${elsewhere.item.id}\`), so its board is not visible: only its members see it.`
+				: found.kind === 'ambiguous'
+					? `"${teamId}" could be ${listTeams(found.options)}. Say which.`
+					: `No triage team "${teamId}" is visible to ${who}.`;
+			return { ...empty, available: true, teams: visible, otherTeams: others, reason };
 		}
 	}
 
@@ -287,12 +315,37 @@ export async function getBoard(
 		available: true,
 		teamId: team.id ? String(team.id) : teamId,
 		teamName: team.name ? decodeTitle(team.name) : undefined,
+		...(matched ? { matched } : {}),
 		teams: visible,
+		otherTeams: others,
+		members: (Array.isArray(raw.members) ? raw.members : [])
+			.map((member: Raw) => ({ uid: Number(member.uid), username: decodeTitle(member.username, `uid ${member.uid}`) }))
+			.filter((member: { uid: number }) => member.uid > 0),
 		columns,
 		items,
 		onDuty: raw.shotef?.username ? decodeTitle(raw.shotef.username) : undefined,
 		isManager: Boolean(raw.isManager),
 	};
+}
+
+/** "A (`a`), B (`b`)" */
+export function listTeams(teams: { id: string; name: string }[]): string {
+	return teams.map(entry => `${entry.name} (\`${entry.id}\`)`).join(', ');
+}
+
+/**
+ * Any team on the forum by id or name — the viewer's own and every other (a
+ * pass target). Writes act only on an exact match; see resolveName.
+ */
+export async function findTeam(
+	client: NodeBBClient,
+	config: Config,
+	capabilities: Capabilities,
+	typed: string,
+): Promise<{ board: TriageBoard; found: Resolution<{ id: string; name: string }> }> {
+	const board = await getBoard(client, config, capabilities);
+	const all = [...board.teams, ...(board.otherTeams ?? [])];
+	return { board, found: resolveName(typed, all.map(entry => ({ item: { id: entry.id, name: entry.name }, ids: [entry.id], names: [entry.name] }))) };
 }
 
 /* --------------------------------------------------------- ticket search */
@@ -326,6 +379,8 @@ export interface FoundTicket extends BoardCard {
 export interface TicketSearch {
 	available: boolean;
 	reason?: string;
+	/** The team asked for, when found by a near match. */
+	matched?: string;
 	/** Teams whose boards were searched. */
 	teams: { id: string; name: string }[];
 	tickets: FoundTicket[];
@@ -425,6 +480,7 @@ export async function searchTickets(
 
 	return {
 		available: true,
+		...(first.matched ? { matched: first.matched } : {}),
 		teams: boards.map(board => ({ id: board.teamId ?? '', name: board.teamName ?? board.teamId ?? '' })),
 		tickets,
 	};

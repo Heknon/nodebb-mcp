@@ -14,6 +14,7 @@ import { NodeBBError } from '../errors.js';
 import type { TopicDetail, TopicSummary } from '../nodebb/types.js';
 import type { TriageStatus } from '../integrations/shotef.js';
 import { answerExcerpt, describeBasis, type AnsweredCandidate, type Candidate, type Investigation } from '../research.js';
+import type { Resolution } from '../resolve.js';
 import { truncate } from '../text.js';
 
 export type ToolResult = CallToolResult;
@@ -257,4 +258,30 @@ function suggestNextSteps(investigation: Investigation): string[] {
 		);
 	}
 	return steps;
+}
+
+/**
+ * Why a typed name could not be used for a change, and what to send instead.
+ * A write never acts on a guess: the caller is told the closest match and how
+ * to name it exactly.
+ */
+export function nameProblem<T>(
+	what: string,
+	typed: string,
+	found: Resolution<T>,
+	label: (item: T) => string,
+	exactly: (item: T) => string,
+): string {
+	switch (found.kind) {
+		case 'guess':
+			return `No ${what} is called "${typed}". Did you mean ${label(found.item)}? This is a change, so it is ` +
+				`not made on a guess: call again with ${exactly(found.item)}.`;
+		case 'ambiguous':
+			return `"${typed}" could be ${found.options.map(label).join(', ')}. Say which.`;
+		case 'none':
+			return `No ${what} matches "${typed}".` +
+				(found.nearest.length ? ` The closest: ${found.nearest.map(label).join(', ')}.` : '');
+		default:
+			return '';
+	}
 }

@@ -83,6 +83,16 @@ the ticket history stay with the team. To keep a server off the board entirely,
 give it a token for a user who is on no triage team and is not an administrator
 (Shotef treats administrators as members of every team).
 
+**Names.** Teams, categories and assignees can be given by name instead of id,
+and spelling need not be exact. "suport", "the billing team", "S&O" or
+"generel discusion" all find what was meant. A lookup takes the closest unique
+match and its output says what it matched. A change (`pass_ticket`,
+`assign_ticket`, `create_topic`) needs the exact name, ignoring case and
+punctuation. A near miss there is answered with "did you mean …?" and
+nothing changes, because a wrong guess would move someone's ticket. A name that fits several
+("general", with both General Discussion and E2E General Discussion) is never
+guessed: the options are listed.
+
 **Prompts:** `answer_forum_question` and `investigate_report` chain the read tools;
 `work_ticket` takes a ticket from report to closed (with public writes off, it
 drafts the reply into a note for a person to post).

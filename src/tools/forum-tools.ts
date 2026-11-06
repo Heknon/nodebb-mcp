@@ -8,6 +8,7 @@ import { getTriageStatus, getTriageStatuses } from '../integrations/shotef.js';
 import { getPost, getTopic, listCategories, listTopics, search } from '../nodebb/forum.js';
 import type { CategoryNode } from '../nodebb/types.js';
 import { gatherCandidates } from '../research.js';
+import { categoryInput, withCategories } from './categories.js';
 import type { ToolContext } from './context.js';
 import {
 	degradationNote, formatCandidate, formatDate, formatTopicDetail, formatTopicSummary, formatTriage, text, toolError,
@@ -97,7 +98,9 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					.enum(['titles', 'titlesposts', 'posts', 'tags'])
 					.optional()
 					.describe('Where to look. Default titlesposts (titles and post bodies).'),
-				categories: z.array(z.number().int().positive()).optional().describe('Restrict to these category ids.'),
+				categories: z.array(categoryInput).optional().describe(
+					'Restrict to these categories: ids or names (a near miss is matched and reported).',
+				),
 				tags: z.array(z.string()).optional().describe('Only topics carrying all of these tags.'),
 				posted_by: z.string().optional().describe('Only posts by this username.'),
 				within_days: z.number().int().positive().optional().describe('Only content newer than this many days.'),
@@ -110,7 +113,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 			},
 			annotations: { readOnlyHint: true, openWorldHint: true },
 		},
-		async (args) => {
+		withCategories(ctx, 'read', async (args) => {
 			try {
 				const caps = await ctx.capabilities.get();
 
@@ -182,7 +185,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 			} catch (err) {
 				return toolError('search the forum', err);
 			}
-		},
+		}),
 	);
 
 	server.registerTool(
@@ -311,7 +314,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					.enum(['recent', 'popular', 'top', 'unread'])
 					.optional()
 					.describe('Which listing. Default recent. unread needs a signed-in user.'),
-				cid: z.number().int().positive().optional().describe('Only this category (ids from list_categories).'),
+				cid: categoryInput.optional().describe('Only this category: its id or name (a near miss is matched and reported).'),
 				term: z
 					.enum(['daily', 'weekly', 'monthly', 'alltime'])
 					.optional()
@@ -321,7 +324,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 			},
 			annotations: { readOnlyHint: true, openWorldHint: true },
 		},
-		async ({ source, cid, term, limit, page }) => {
+		withCategories(ctx, 'read', async ({ source, cid, term, limit, page }) => {
 			try {
 				const caps = await ctx.capabilities.get();
 				const { topics, source: usedSource } = await listTopics(ctx.client, {
@@ -342,6 +345,6 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 			} catch (err) {
 				return toolError('list topics', err);
 			}
-		},
+		}),
 	);
 }

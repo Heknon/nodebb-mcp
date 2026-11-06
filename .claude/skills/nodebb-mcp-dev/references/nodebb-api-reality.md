@@ -151,6 +151,9 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
   intake: [...cards], shotef: { username } | null, isManager, … }`. A viewer on no
   team: **200** `{ noTeam: true, teams: [] }` (not 403). Closed tickets sit in the
   `terminal` column of `columns`.
+- The board also carries `passTargets` (every **other** team: `{ id, name }`, the
+  only way a non-admin sees teams they are not on), `members` and `roster`
+  (`{ uid, username, … }`) — what names are matched against.
 - Card: `tid, title, slug, status, priority, claimedBy: { username } | null,
   helpWanted, isQuestion?, isSolved?, openDays, idleDays, noReplyDays?, ghost?,
   handledByName?, closeReason`.

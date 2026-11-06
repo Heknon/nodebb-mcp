@@ -188,6 +188,6 @@ test('claiming an intake ticket for a team you are not on is refused with the re
 	const { forum, mcp } = await member(t, { NODEBB_API_TOKEN: 'maintainer-token' }, { intake: true });
 	const claim = await mcp.call('assign_ticket', { tid: 15, owner: 'me', team: 'ops' });
 	assert.equal(claim.isError, true);
-	assert.match(claim.text, /doesn't own this ticket's category|intake lane/);
+	assert.match(claim.text, /Ops \(`ops`\) is not one of your teams\. Yours: Core Support \(`core`\)/);
 	assert.equal(forum.tickets[15].contended, true, 'still untaken');
 });

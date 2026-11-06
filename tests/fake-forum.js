@@ -146,6 +146,8 @@ const TEAM = { id: 'core', name: 'Core Support', members: [1, 8], managers: [1],
  * a claim must name the team it takes the ticket for.
  */
 const OPS = { id: 'ops', name: 'Ops' };
+/** A team nobody in the fixture is on: a pass target, as Shotef's board lists them (passTargets). */
+const BILLING = { id: 'billing', name: 'Billing' };
 
 function seedTickets() {
 	return {
@@ -173,6 +175,8 @@ export async function startFakeForum(opts = {}) {
 	const plugins = { search: true, qna: true, shotef: true, ...(opts.plugins ?? {}) };
 	const TOPICS = seedTopics();
 	const tickets = seedTickets();
+	/** Tickets passed to another team: { tid, to, reason } */
+	const passes = [];
 	if (opts.intake) {
 		tickets[15] = {
 			tid: 15, title: 'SSO login loops back to the sign-in page', slug: '15/sso-loop', status: 'todo', priority: 'normal',
@@ -633,6 +637,9 @@ export async function startFakeForum(opts = {}) {
 				backlogCount: backlog.reduce((n, c) => n + c.count, 0),
 				intake,
 				intakeCount: intake.length,
+				// As Shotef sends them: every other team, and the team's members.
+				passTargets: [BILLING, ...(opts.intake ? [OPS] : [])],
+				members: TEAM.members.map(member => ({ uid: member, username: userOf(member).username, picture: null })),
 				shotef: { uid: 8, username: 'maintainer' },
 				vacant: false,
 				isManager: TEAM.managers.includes(shotefUid),
@@ -754,8 +761,12 @@ export async function startFakeForum(opts = {}) {
 				return v3(200, { isSolved: true });
 			}
 			if (action === '/pass' && method === 'POST') {
-				if ((body.toTeamId ?? body.team) === TEAM.id) return v3(400, {}, 'That ticket is already handled by this team');
-				return v3(404, {}, 'No such team');
+				const to = body.toTeamId ?? body.team;
+				if (to === TEAM.id) return v3(400, {}, 'That ticket is already handled by this team');
+				if (to !== BILLING.id) return v3(404, {}, 'No such team');
+				passes.push({ tid, to, reason: body.reason });
+				audit({ action: 'pass', to });
+				return v3(200, { ...ticket, handlingTeam: to });
 			}
 			return notFound();
 		}
@@ -771,6 +782,7 @@ export async function startFakeForum(opts = {}) {
 		requests,
 		topics: TOPICS,
 		tickets,
+		passes,
 		notes,
 		loginAttempts,
 		loginUserAgents,

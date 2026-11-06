@@ -191,12 +191,12 @@ test('get_triage_status distinguishes untracked topics from missing plugins', as
 test('a team the viewer cannot see is refused, not swapped for their default team; a team name works', async (t) => {
 	// Shotef answers an unknown team with the viewer's default board, silently.
 	const { forum, mcp } = await fullStack(t, { NODEBB_API_TOKEN: 'maintainer-token' });
-	const wrong = await mcp.call('get_triage_board', { team: 'biling' });
-	assert.match(wrong.text, /No triage team "biling" is visible to maintainer\.\n\nVisible teams: Core Support \(core\)$/);
+	const wrong = await mcp.call('get_triage_board', { team: 'legal' });
+	assert.match(wrong.text, /No triage team "legal" is visible to maintainer\.\n\nVisible teams: Core Support \(core\)$/);
 	assert.doesNotMatch(wrong.text, /# Triage board — Core Support/);
 
-	const search = await mcp.call('search_tickets', { team: 'biling' });
-	assert.match(search.text, /No triage team "biling" is visible to maintainer\. Teams they can see: Core Support \(`core`\)\./);
+	const search = await mcp.call('search_tickets', { team: 'legal' });
+	assert.match(search.text, /No triage team "legal" is visible to maintainer\. Teams they can see: Core Support \(`core`\)\./);
 	assert.doesNotMatch(search.text, /#1[0-9] /);
 
 	const before = forum.requests.length;

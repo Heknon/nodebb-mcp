@@ -102,7 +102,14 @@ forum is reachable, so `npm test` stays green anywhere.
    parameters. Group only fields of the same kind of change
    (`set_ticket_priority` = priority + help-wanted). Never keep an overlapping
    bundled tool alongside the scoped ones.
-9. Add the fake-forum behaviour the tool needs (observed first), a unit test, and
+9. **Names, not just ids.** An input naming a team, category or person takes
+   the name too: `categoryInput` + `withCategories(ctx, 'read' | 'write', …)` for
+   categories, `findTeam` / `getBoard` for teams, the board's `members` for
+   people, all through `resolveName` (`src/resolve.ts`). Reads act on a unique
+   near miss and report it; writes act only on an exact match and answer
+   anything else with `nameProblem` ("did you mean …?"). Never pick between
+   ambiguous matches.
+10. Add the fake-forum behaviour the tool needs (observed first), a unit test, and
    an e2e assertion. Then `npm run check && npm run e2e`.
 
 ## Identity: verify, never assume

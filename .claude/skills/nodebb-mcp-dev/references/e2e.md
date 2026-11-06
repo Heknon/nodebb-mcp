@@ -35,6 +35,7 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | `tests/e2e/oauth.e2e.test.js` | The shared HTTP server, spawned as `node dist/index.js` with `NODEBB_MCP_HTTP_PORT`: discovery, two real people signing in (SDK OAuth client + scripted browser), isolation, a wrong password on the page, a session signed out on the forum ending only that person's access (and listed as `nodebb-mcp` there), `/revoke` logging NodeBB out, the state file holding no password or usable token. |
 | `tests/e2e/oauth-browser.e2e.test.js` | The sign-in page in headless Chromium (Playwright): a wrong password, then the right one, the redirect back to the client, and the client connecting. Catches what only a browser enforces (CSP, form-action resolution). Skips without Playwright. |
 | `tests/e2e/intake.e2e.test.js` | Shared-category tickets: listed in intake, opened by a member of either owning team (the second needs `?team=`), taken by a claim that names the team. |
+| `tests/e2e/names.e2e.test.js` | Teams, categories and people by name against the forum's real names: a mistyped team found and reported, a team you are not on named as such, a real ambiguity (General Discussion vs E2E General Discussion) listed, and changes refused on a near miss. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture

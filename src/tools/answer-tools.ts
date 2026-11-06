@@ -12,6 +12,7 @@ import { getTriageStatus, getTriageStatuses } from '../integrations/shotef.js';
 import {
 	answerExcerpt, describeBasis, gatherCandidates, investigate, rankForAnswers, resolveAnswers,
 } from '../research.js';
+import { categoryInput, withCategories } from './categories.js';
 import type { ToolContext } from './context.js';
 import {
 	degradationNote, formatAnswered, formatCandidate, formatDate, formatInvestigation, formatTriage,
@@ -31,7 +32,9 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 				'asks a question the forum may have seen before.',
 			inputSchema: {
 				question: z.string().min(1).describe('The question, in natural language.'),
-				categories: z.array(z.number().int().positive()).optional().describe('Restrict to these category ids.'),
+				categories: z.array(categoryInput).optional().describe(
+					'Restrict to these categories: ids or names (a near miss is matched and reported).',
+				),
 				tags: z.array(z.string()).optional().describe('Only topics carrying all of these tags.'),
 				depth: z
 					.number()
@@ -47,7 +50,7 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 			},
 			annotations: { readOnlyHint: true, openWorldHint: true },
 		},
-		async ({ question, categories, tags, depth, solved_only }) => {
+		withCategories(ctx, 'read', async ({ question, categories, tags, depth, solved_only }) => {
 			try {
 				const caps = await ctx.capabilities.get();
 				const { candidates, notes } = await gatherCandidates(ctx.client, caps, {
@@ -117,7 +120,7 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 			} catch (err) {
 				return toolError('find answers', err);
 			}
-		},
+		}),
 	);
 
 	server.registerTool(
@@ -244,9 +247,9 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 					.min(1)
 					.describe('The problem, described as the reporter would — symptoms, error text, what broke.'),
 				categories: z
-					.array(z.number().int().positive())
+					.array(categoryInput)
 					.optional()
-					.describe('Restrict to these category ids (from list_categories).'),
+					.describe('Restrict to these categories: ids or names (a near miss is matched and reported).'),
 				tags: z.array(z.string()).optional().describe('Only topics carrying all of these tags.'),
 				depth: z
 					.number()
@@ -271,7 +274,7 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 			},
 			annotations: { readOnlyHint: true, openWorldHint: true },
 		},
-		async (args) => {
+		withCategories(ctx, 'read', async (args) => {
 			try {
 				const caps = await ctx.capabilities.get();
 				const result = await investigate(ctx.client, ctx.config, caps, {
@@ -286,6 +289,6 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 			} catch (err) {
 				return toolError('investigate the issue', err);
 			}
-		},
+		}),
 	);
 }

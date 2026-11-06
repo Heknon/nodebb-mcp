@@ -51,7 +51,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 				'urgent tickets are unclaimed", or to find the ticket for a problem you know by name.',
 			inputSchema: {
 				query: z.string().optional().describe('Words that must all appear in the title or tags.'),
-				team: z.string().optional().describe('Only this team\'s board (ids from get_triage_board). Default: every team you can see.'),
+				team: z.string().optional().describe('Only this team\'s board: its id or name (near misses are matched and reported). Default: every team you can see.'),
 				lane: z
 					.enum(['open', 'active', 'backlog', 'intake', 'closed', 'all'])
 					.optional()
@@ -123,6 +123,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 
 				const lines = [
 					`# ${result.tickets.length} ticket${result.tickets.length === 1 ? '' : 's'} — ${described}`,
+					...(result.matched ? [`_Team: ${result.matched}._`] : []),
 					`_Searched: ${teams}._`,
 					'',
 				];
@@ -225,7 +226,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 				team: z
 					.string()
 					.optional()
-					.describe('Team id. Omit for the token holder\'s default team.'),
+					.describe('Team id or name — a near miss ("suport") is matched to the closest of your teams and reported. Omit for your default team.'),
 				include_closed: z
 					.boolean()
 					.optional()
@@ -260,6 +261,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 					board.teams.length > 1 ? teamList : '',
 				].filter(Boolean);
 				lines.push(`_${facts.join(' · ')}_`, '');
+				if (board.matched) lines.push(`_Team: ${board.matched} — the closest of your teams to what was asked._`, '');
 
 				const isClosed = (key: string) =>
 					board.columns.find(column => column.key === key)?.class === 'terminal';
