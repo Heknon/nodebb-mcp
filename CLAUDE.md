@@ -101,9 +101,14 @@ NODEBB_URL=http://127.0.0.1:4567 NODEBB_MCP_HTTP_PORT=8799 NODEBB_MCP_STATE_FILE
 
 ## 5. Git
 
-- Branch work lands on the designated working branch; the repo has no `main`
-  yet (the default is `claude/nodebb-mcp-plugin-resources-k8brz2`). Don't push
-  elsewhere without being asked; don't open PRs unless asked.
+- `main` is what ships. Work lands on the designated working branch and reaches
+  `main` only when the user asks for the merge. (GitHub's default branch may
+  still be `claude/nodebb-mcp-plugin-resources-k8brz2`, the history `main`
+  started from.) Don't push elsewhere without being asked; don't open PRs
+  unless asked.
+- `main` needs a Shotef build with its HTTP API (`/api/v3/plugins/shotef/tickets/…`)
+  for the ticket tools; until that is on Shotef's `main` too, a forum running
+  Shotef `main` gets them reported as unavailable (see README → Plugins).
 - Commit author must be `noreply@anthropic.com`; no model ids in commits or PRs.
 - Cross-repo changes (e.g. a Shotef route this server needs) go to Shotef's own
   working branch, committed and pushed there, and are verified by this repo's
