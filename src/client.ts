@@ -115,7 +115,8 @@ export class NodeBBClient {
 	}
 
 	private buildUrl(path: string, query: RequestOptions['query']): string {
-		const url = new URL(`${this.config.url}${path.startsWith('/') ? path : `/${path}`}`);
+		const base = this.config.apiUrl ?? this.config.url;
+		const url = new URL(`${base}${path.startsWith('/') ? path : `/${path}`}`);
 		for (const [key, value] of Object.entries(query ?? {})) {
 			if (value === undefined) continue;
 			if (Array.isArray(value)) {

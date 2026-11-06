@@ -2,12 +2,10 @@
 /**
  * nodebb-mcp — an MCP server over a NodeBB forum.
  *
- * Two ways to run:
- *  - stdio (default): one person's client starts the server and it acts as the
- *    configured forum account. stdout belongs to the protocol, so every
- *    diagnostic here goes to stderr.
- *  - HTTP (NODEBB_MCP_HTTP_PORT): one shared server; each person connects their
- *    own client and signs in with their own forum account over OAuth.
+ * This entry point is the stdio server: one person's client starts it and it
+ * acts as the configured forum account. stdout belongs to the protocol, so
+ * every diagnostic here goes to stderr. (For everyone at once, install the
+ * package as the NodeBB plugin: the forum then serves MCP itself at /mcp.)
  *
  * Startup never blocks on the forum being reachable — a forum that is down
  * should surface as a tool result the caller can read, not as a server that
@@ -34,23 +32,6 @@ async function main(): Promise<void> {
 			process.exit(78); // EX_CONFIG
 		}
 		throw err;
-	}
-
-	if (config.http) {
-		const { startHttpServer } = await import('./http.js');
-		const running = await startHttpServer(config, log);
-		log(`v${SERVER_VERSION} serving ${config.url} over HTTP at ${running.url}/mcp — ` +
-			`each person signs in with their own forum account${config.enableWrites ? '; public writes enabled' : ''}`);
-		if (config.token || config.username) {
-			log('NODEBB_API_TOKEN / NODEBB_USERNAME are not used in HTTP mode: every person signs in as themselves.');
-		}
-		const stop = (signal: string) => {
-			log(`${signal} received, shutting down`);
-			running.close().finally(() => process.exit(0));
-		};
-		process.on('SIGINT', () => stop('SIGINT'));
-		process.on('SIGTERM', () => stop('SIGTERM'));
-		return;
 	}
 
 	const { server, capabilities } = await buildServer(config);

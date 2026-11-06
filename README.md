@@ -1,44 +1,45 @@
-# nodebb-mcp
+# nodebb-plugin-mcp
 
-An MCP server for a NodeBB forum: search it, pull answers out of existing
-threads, investigate problem reports, and work support tickets on a
-[Shotef](https://github.com/emotochat-droid/nodebb-shotef) triage board.
+MCP for a NodeBB forum, served by the forum itself. Each person connects their AI
+client (Claude Code, an IDE) with their own forum account and can then search the
+forum, pull answers out of existing threads, investigate problem reports, and
+work support tickets on a [Shotef](https://github.com/emotochat-droid/nodebb-shotef)
+triage board — always with exactly their own forum permissions.
 
 Works on a plain NodeBB forum; the search, Q&A and Shotef plugins each unlock
 more (see [Plugins](#plugins)).
 
-## Quick start
+## Install
+
+Like any NodeBB plugin:
 
 ```bash
-npm install && npm run build
+cd /path/to/nodebb
+npm install github:heknon/nodebb-mcp     # or a local checkout's path; it builds itself on install
+./nodebb activate nodebb-plugin-mcp
+./nodebb build && ./nodebb restart
 ```
 
-Two ways to run it:
+(It is not on the npm registry yet. Installing from GitHub needs read access to
+the repository.)
 
-- **On each person's machine** (stdio): their MCP client starts the server, which
-  acts as one configured forum account. Below.
-- **As one shared server** (HTTP): everyone connects to it and signs in with their
-  own forum account in the browser, OAuth-style. See [Shared server](#shared-server).
+The forum now serves MCP at `https://forum.example.com/mcp`. **ACP → Plugins →
+MCP** shows that address, the settings, and every connected app.
 
-```json
-{
-  "mcpServers": {
-    "nodebb": {
-      "command": "node",
-      "args": ["/path/to/nodebb-mcp/dist/index.js"],
-      "env": {
-        "NODEBB_URL": "https://forum.example.com",
-        "NODEBB_USERNAME": "support-bot",
-        "NODEBB_PASSWORD": "…"
-      }
-    }
-  }
-}
+## Connect
+
+```bash
+claude mcp add --transport http forum https://forum.example.com/mcp
 ```
 
-The server signs in like a browser and keeps the session working on its own.
-Then call `forum_capabilities` to check who the forum says you are and which
-plugins are live.
+The first time the client connects, the browser opens the forum: the person
+signs in the way they always do (password, SSO, two-factor — whatever the forum
+uses) and sees *"Claude Code wants to use the forum as you"*. **Allow** sends
+them back to the client, which is now connected as them. Nothing else to
+configure: no tokens to copy, no passwords through the MCP client.
+
+Each person's own page, **/mcp/connections**, lists their connected apps with a
+**Disconnect** button, and shows the command above.
 
 ## Tools
 
@@ -48,7 +49,7 @@ What a tool may change decides when it is available:
 | --- | --- | --- |
 | nothing | always | anyone the forum lets read the content |
 | **ticket** — Shotef team state | always, when Shotef is installed | members of the team handling the ticket, and administrators (Shotef checks) |
-| **public** — what forum readers see | only with `NODEBB_ENABLE_WRITES=1` | the token's user, within their NodeBB privileges |
+| **public** — what forum readers see | only with **Public writes** on (ACP → Plugins → MCP; `NODEBB_ENABLE_WRITES=1` locally) | the connected person, within their NodeBB privileges |
 
 | Tool | Does | Changes | Needs |
 | --- | --- | --- | --- |
@@ -71,11 +72,11 @@ What a tool may change decides when it is available:
 | `assign_ticket` | Claim, release, or assign a ticket. Claiming a ticket in the intake lane (a category two teams share, taken by neither) takes it for your team | ticket | Shotef, team member (manager to assign someone else) |
 | `set_ticket_priority` | Set priority and the help-wanted flag | ticket | Shotef, team member |
 | `pass_ticket` | Hand a ticket to another team | ticket | Shotef, team member |
-| `create_topic` | Start a topic, optionally as a Q&A question | public | `NODEBB_ENABLE_WRITES` |
-| `reply_to_topic` | Post a reply | public | `NODEBB_ENABLE_WRITES` |
-| `edit_post` | Replace a post's text | public | `NODEBB_ENABLE_WRITES` |
-| `vote_post` | Upvote, downvote, or withdraw a vote | public | `NODEBB_ENABLE_WRITES` |
-| `mark_solved` | Accept a reply as a question's answer | public | `NODEBB_ENABLE_WRITES`, Q&A, Shotef, team member |
+| `create_topic` | Start a topic, optionally as a Q&A question | public | Public writes |
+| `reply_to_topic` | Post a reply | public | Public writes |
+| `edit_post` | Replace a post's text | public | Public writes |
+| `vote_post` | Upvote, downvote, or withdraw a vote | public | Public writes |
+| `mark_solved` | Accept a reply as a question's answer | public | Public writes, Q&A, Shotef, team member |
 
 Ticket changes are not entirely invisible: the reporter sees the coarse stage
 ("in progress", "closed") and Shotef notifies them when it changes. Notes and
@@ -97,7 +98,64 @@ guessed: the options are listed.
 `work_ticket` takes a ticket from report to closed (with public writes off, it
 drafts the reply into a note for a person to post).
 
-## Configuration
+## How access works
+
+- **Each connection is the person.** Allowing an app creates a NodeBB API token
+  for that person (listed in ACP → Settings → API Access as *"MCP: Claude Code
+  (alice)"*). Every tool call goes through the forum's own API with that token,
+  so NodeBB checks it like any request of theirs: category privileges, bans,
+  Shotef's team rules.
+- **Ending access.** The person disconnects the app on /mcp/connections; an
+  administrator revokes it in ACP → Plugins → MCP, or deletes its API token; or
+  the client revokes its own token. Any of these cuts it off on the next request.
+- **Standard OAuth.** The forum is the authorization server: discovery
+  (`/.well-known/oauth-authorization-server/mcp`), dynamic client registration,
+  PKCE, one-time codes, hourly access tokens and rotating refresh tokens, all
+  stored hashed in the forum's database. Nothing outside the forum is involved,
+  so it works air-gapped.
+- **Any number of forum processes.** The MCP endpoint keeps no session between
+  requests, and all state is in the database, so a multi-process forum works
+  as-is.
+
+Settings (ACP → Plugins → MCP):
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| Public writes | off | Lets connected apps post topics and replies, edit posts, vote and accept answers, as the person and within their privileges. Shotef ticket actions do not need it. Takes effect on the next request, in every forum process. |
+
+Before going live:
+
+- **HTTPS.** OAuth requires the forum to be served over `https://` (plain http
+  is accepted only on localhost).
+- **Forums under a subpath** (`https://example.com/forum`): OAuth discovery
+  lives at the origin root, so the reverse proxy must also send
+  `/.well-known/oauth-authorization-server/forum/mcp` and
+  `/.well-known/oauth-protected-resource/forum/mcp` to NodeBB.
+- **Content-Security-Policy.** If you turned on NodeBB's CSP, its `form-action`
+  must allow the clients' callback addresses (e.g. `http://localhost:*` for
+  Claude Code), or the browser blocks the way back after **Allow**.
+
+## Running it locally instead (stdio)
+
+Without installing anything on the forum, one person can run the same tools on
+their own machine, acting as one forum account (`npm install && npm run build`
+in a checkout first):
+
+```json
+{
+  "mcpServers": {
+    "forum": {
+      "command": "node",
+      "args": ["/path/to/nodebb-mcp/dist/index.js"],
+      "env": {
+        "NODEBB_URL": "https://forum.example.com",
+        "NODEBB_USERNAME": "support-bot",
+        "NODEBB_PASSWORD": "…"
+      }
+    }
+  }
+}
+```
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
@@ -116,70 +174,15 @@ drafts the reply into a note for a person to post).
 **Signing in with a password.** The server keeps the session cookie, sends the
 CSRF token on writes, and signs in again by itself when the session expires or
 is revoked. NodeBB limits sign-ins (by default, 5 failures an hour lock the
-account; 20 sign-ins an hour from one IP lock the IP), so:
-
-- new server processes reuse the cached session instead of signing in again;
-- a wrong password is tried once, and remembered for an hour, so restarts can't
-  lock the account. Every tool then reports the forum's reason;
-- the password itself is never written anywhere.
-
-Two-factor authentication is not supported; use an API token for such accounts.
+account; 20 sign-ins an hour from one IP lock the IP), so new processes reuse the
+cached session, a wrong password is tried once and remembered for an hour, and
+the password itself is never written anywhere. The session shows on the account's
+sessions page as *nodebb-mcp 0.1.0 on Linux*. Two-factor accounts need an API
+token instead.
 
 **Check who you are.** NodeBB does not reject an invalid or revoked token; it
 quietly treats the caller as a guest. `forum_capabilities` shows the user the
 forum actually resolved, and flags credentials it refused or ignored.
-
-## Shared server
-
-Run one server for everyone; each person connects their client and signs in with
-**their own** forum account, so their tools act as them with exactly their forum
-and Shotef permissions. The server is its own OAuth authorization server and the
-forum is the identity provider: no outside service is involved, so it works
-air-gapped.
-
-```bash
-NODEBB_URL=https://forum.internal \
-NODEBB_MCP_HTTP_PORT=8080 NODEBB_MCP_HTTP_HOST=0.0.0.0 \
-NODEBB_MCP_PUBLIC_URL=https://mcp.internal \
-node dist/index.js
-```
-
-```bash
-claude mcp add --transport http nodebb https://mcp.internal/mcp
-```
-
-The client opens a browser page on this server: *"\<client> wants to use the forum
-as you"*, with the forum username and password. The password goes to the forum's
-own login and is not stored; the forum session it creates is kept (owner-only
-state file) and the client gets OAuth tokens (stored hashed). Access ends when that
-forum session does: it expires, the person signs it out from their forum account's
-sessions page (where it is listed as *nodebb-mcp 0.1.0 on Linux*, or the server's
-OS), or the client revokes its refresh token, which signs the session out. The
-client is then sent to sign in again.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `NODEBB_MCP_HTTP_PORT` | — | Serve over HTTP on this port (enables this mode) |
-| `NODEBB_MCP_HTTP_HOST` | `127.0.0.1` | Interface to bind |
-| `NODEBB_MCP_PUBLIC_URL` | `http://localhost:<port>` | The origin clients use; the OAuth issuer. MCP lives at `/mcp` |
-| `NODEBB_MCP_STATE_FILE` | `~/.local/state/nodebb-mcp/` | Registered clients, hashed tokens, and each person's forum session; `off` keeps them in memory (everyone signs in again after a restart) |
-
-`NODEBB_ENABLE_WRITES` still applies to everyone; `NODEBB_API_TOKEN` and
-`NODEBB_USERNAME` are not used in this mode.
-
-Before deploying:
-
-- **HTTPS.** OAuth requires an `https://` public URL except on localhost. Put the
-  server behind a TLS proxy (an internal CA is fine) at the root of its own host
-  name.
-- **Raise the forum's IP sign-in limit.** Every person's sign-in reaches NodeBB
-  from this server's IP, and NodeBB locks an IP after `ipLoginAttempts` (20)
-  sign-ins an hour. Raise it in ACP → Settings → User → Account Protection
-  ("Login attempts per IP per hour").
-- **Clients must reach the server.** Claude Code connects directly, so it works
-  inside an air-gapped network; clients that connect from the cloud cannot reach
-  an internal server.
-- Two-factor authentication is not supported for sign-in.
 
 ## Plugins
 
@@ -210,10 +213,17 @@ npm run e2e        # build, seed and test against a real NodeBB; provisions one 
 
 - **Unit tests** (`tests/*.test.js`) run against `tests/fake-forum.js`, an HTTP
   model of NodeBB 4.16 with the three plugins.
-- **End-to-end tests** (`tests/e2e/`) start the built server once per forum
-  identity against a real forum seeded by `e2e/seed.mjs`. They run once with all
-  plugins on and once with them off. `e2e/forum.sh` starts, stops and inspects
+- **End-to-end tests** (`tests/e2e/`) run against a real forum seeded by
+  `e2e/seed.mjs`, which runs this checkout as `nodebb-plugin-mcp` (symlinked, like
+  Shotef). The plugin suites connect through the forum's real OAuth, login and
+  Connect page — one of them in headless Chromium, ACP included; the others drive
+  the stdio server once per forum identity. They run once with all plugins on
+  and once with them off. `e2e/forum.sh` starts, stops, rebuilds and inspects
   that forum.
+
+Layout: `src/plugin/` is the NodeBB side (routes, OAuth provider, database
+store), `library.cjs` + `plugin.json` + `templates/` + `public/` are what NodeBB
+loads, and everything else in `src/` is the MCP server both modes share.
 
 When the two disagree, the real forum wins and the fake is fixed. `CLAUDE.md`
 covers this container; `.claude/skills/nodebb-mcp-dev/` covers NodeBB's API

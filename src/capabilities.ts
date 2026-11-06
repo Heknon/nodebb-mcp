@@ -203,7 +203,8 @@ export class CapabilityRegistry {
 		if (!this.config.enableWrites) {
 			return {
 				state: 'absent',
-				reason: 'Public writes are off. Set NODEBB_ENABLE_WRITES=1 to post, reply, edit, vote and accept answers.',
+				reason: this.config.writesOffReason ??
+					'Public writes are off. Set NODEBB_ENABLE_WRITES=1 to post, reply, edit, vote and accept answers.',
 			};
 		}
 		if (!forum.reachable) return { state: 'unknown', reason: 'Forum unreachable.' };

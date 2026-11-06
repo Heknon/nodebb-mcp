@@ -1,0 +1,4 @@
+{
+  "//": "NodeBB bundles these with webpack as AMD modules; the repo root is ESM (\"type\": \"module\"), which would make webpack drop define().",
+  "type": "commonjs"
+}

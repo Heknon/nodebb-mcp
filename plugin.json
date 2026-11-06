@@ -1,0 +1,14 @@
+{
+  "id": "nodebb-plugin-mcp",
+  "url": "https://github.com/heknon/nodebb-mcp",
+  "library": "./library.cjs",
+  "hooks": [
+    { "hook": "static:app.load", "method": "init" },
+    { "hook": "static:api.routes", "method": "apiRoutes" },
+    { "hook": "filter:admin.header.build", "method": "adminMenu" }
+  ],
+  "templates": "templates",
+  "modules": {
+    "../admin/plugins/mcp.js": "./public/admin.js"
+  }
+}

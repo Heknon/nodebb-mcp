@@ -10,7 +10,7 @@
 # 2. start Redis + NodeBB                              (e2e/forum.sh up)
 # 3. build the MCP server                              (npm run build)
 # 4. seed the fixture through the live Write API       (e2e/seed.mjs)
-# 5. full-stack suites: dbsearch + Q&A + Shotef        (tests/e2e/{read,write,session,oauth,oauth-browser,intake,names})
+# 5. full-stack suites: dbsearch + Q&A + Shotef        (tests/e2e/{read,write,session,plugin,plugin-browser,intake,names})
 # 6. deactivate the three plugins, run the core suite, reactivate (always)
 set -euo pipefail
 
@@ -33,11 +33,15 @@ cd "$REPO"
 [ -d "$NODEBB_DIR" ] || "$HERE/forum.sh" provision
 "$HERE/forum.sh" up
 npm run build --silent
+# The forum runs this repo as nodebb-plugin-mcp and keeps its server code in
+# memory: restart it so it serves what was just built. (Templates or ACP code
+# changed? `e2e/forum.sh build` rebuilds NodeBB's assets too.)
+"$HERE/forum.sh" restart
 node "$HERE/seed.mjs" "${SEED_ARGS[@]}"
 
 status=0
 echo "── full stack: dbsearch + Q&A + Shotef ─────────────────────────────"
-node --test tests/e2e/read.e2e.test.js tests/e2e/write.e2e.test.js tests/e2e/session.e2e.test.js tests/e2e/oauth.e2e.test.js tests/e2e/oauth-browser.e2e.test.js tests/e2e/intake.e2e.test.js tests/e2e/names.e2e.test.js || status=$?
+node --test tests/e2e/read.e2e.test.js tests/e2e/write.e2e.test.js tests/e2e/session.e2e.test.js tests/e2e/plugin.e2e.test.js tests/e2e/plugin-browser.e2e.test.js tests/e2e/intake.e2e.test.js tests/e2e/names.e2e.test.js || status=$?
 
 if [ "$FULL_ONLY" = 0 ]; then
 	echo "── core only: the same forum with all three plugins deactivated ───"

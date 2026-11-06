@@ -6,6 +6,7 @@
 #   e2e/forum.sh up            start Redis (with persistence!) and NodeBB, wait until ready
 #   e2e/forum.sh down          stop NodeBB (Redis keeps running)
 #   e2e/forum.sh restart       restart NodeBB and wait (needed after server-side plugin edits)
+#   e2e/forum.sh build         rebuild NodeBB's assets + restart (templates, ACP/client JS, languages)
 #   e2e/forum.sh status        what is running, what is active
 #   e2e/forum.sh plugins off   deactivate dbsearch, Q&A and Shotef + restart (core-only forum)
 #   e2e/forum.sh plugins on    reactivate them + restart
@@ -67,6 +68,11 @@ link_shotef() {
 	if [ ! -L "$NODEBB_DIR/node_modules/nodebb-plugin-shotef" ]; then
 		say "re-linking nodebb-plugin-shotef -> $SHOTEF_DIR"
 		ln -sfn "$SHOTEF_DIR" "$NODEBB_DIR/node_modules/nodebb-plugin-shotef"
+	fi
+	# This repo is itself a NodeBB plugin (nodebb-plugin-mcp): the forum loads it from here.
+	if [ ! -L "$NODEBB_DIR/node_modules/nodebb-plugin-mcp" ]; then
+		say "linking nodebb-plugin-mcp -> $REPO"
+		ln -sfn "$REPO" "$NODEBB_DIR/node_modules/nodebb-plugin-mcp"
 	fi
 }
 
@@ -159,7 +165,8 @@ cmd_provision() {
 		else npm install --no-audit --no-fund "nodebb-plugin-question-and-answer@$QNA_VERSION"; fi
 	fi
 	link_shotef
-	for plugin in "${OPTIONAL_PLUGINS[@]}"; do ./nodebb activate "$plugin" >>"$LOG" 2>&1 </dev/null; done
+	(cd "$REPO" && [ -d dist ] || npm run build >>"$LOG" 2>&1)
+	for plugin in "${OPTIONAL_PLUGINS[@]}" nodebb-plugin-mcp; do ./nodebb activate "$plugin" >>"$LOG" 2>&1 </dev/null; done
 	say "building (series mode — parallel builds can hit EMFILE under a low ulimit)"
 	rm -f build/public/scripts-client.js build/public/scripts-client.js.map \
 		build/public/scripts-admin.js build/public/scripts-admin.js.map
@@ -174,6 +181,13 @@ case "${1:-}" in
 	up) cmd_up ;;
 	down) nodebb_stop; say "NodeBB stopped" ;;
 	restart) cmd_restart ;;
+	build)
+		cd "$NODEBB_DIR"
+		rm -f build/public/scripts-client.js build/public/scripts-client.js.map \
+			build/public/scripts-admin.js build/public/scripts-admin.js.map
+		say "building NodeBB assets (series mode)"
+		./nodebb build --series >>"$LOG" 2>&1 </dev/null
+		cmd_restart ;;
 	status) cmd_status ;;
 	plugins) shift; cmd_plugins "$@" ;;
 	*) sed -n '3,12p' "$0"; exit 64 ;;

@@ -1,8 +1,10 @@
 ---
 name: nodebb-mcp-dev
 description: >-
-  Building, extending, debugging, or testing nodebb-mcp — the MCP server that
-  reads, answers from, posts to, and works triage tickets on a NodeBB forum — or
+  Building, extending, debugging, or testing nodebb-mcp (nodebb-plugin-mcp) — the
+  NodeBB plugin that serves MCP from the forum itself (OAuth via the forum's own
+  login, per-person API tokens), also runnable over stdio — which reads, answers
+  from, posts to, and works triage tickets on a NodeBB forum — or
   any other client of NodeBB's HTTP APIs. Use when adding or changing a tool,
   touching capability probing (search / Q&A / Shotef), API-token identity
   (master tokens, _uid, tokens NodeBB silently downgrades to guest), the public
@@ -51,14 +53,15 @@ wrong); the real forum did none of those. So:
 | e2e, full stack | `npm run test:e2e` | seeded forum, plugins on | real payload shapes, identities, live hooks |
 | e2e, core only | `npm run e2e` (toggles plugins) | seeded forum | real degradation, stale plugin state |
 
-OAuth is tested with the SDK's own OAuth client and a scripted browser
-(`tests/oauth-harness.js`) — unit against the fake, e2e against the real forum
-with the server started as a child process the way it is deployed. A scripted
-browser is not a browser: sign-in once passed every fetch-based test while real
-Chromium could not finish it (a relative form action after an error re-render;
-CSP `form-action` also governing the redirect back to the client, which Chromium
-reports as a block on the *form* URL). `oauth-browser.e2e.test.js` signs in with
-headless Chromium; keep any change to the sign-in page covered there.
+The plugin's OAuth is tested with the SDK's own OAuth client and a scripted
+browser (`tests/oauth-harness.js`: forum login, Connect page) against the real
+forum, and its store/provider in unit tests on an in-memory stand-in for
+NodeBB's database (`tests/plugin-store.test.js`). A scripted browser is not a
+browser: an earlier sign-in page passed every fetch-based test while real
+Chromium could not finish it, and the ACP module looked fine until a browser
+showed "define is not defined". `plugin-browser.e2e.test.js` runs headless
+Chromium through the real login, Connect page and ACP; keep page changes covered
+there.
 
 `npm run e2e` does all of it: provision if needed → start → build → seed →
 full-stack suites → plugins off → core suite → plugins back on (always, via a
@@ -121,14 +124,28 @@ renews a lost session and retries once, never retries a refused sign-in, and
 caches the session in a 0600 file so restarts don't count against NodeBB's
 login rate limits. See the reference for the observed login behaviour.
 
-**Shared HTTP server** (`src/http.ts`, `src/oauth/`, `NODEBB_MCP_HTTP_PORT`): the
-server is its own OAuth 2.1 authorization server (SDK `mcpAuthRouter`: metadata,
-dynamic registration, PKCE, rotating refresh tokens) and the forum is the
-identity provider — the sign-in page posts to NodeBB's real login, and the
-resulting forum session *is* the grant. The password is never kept, so such a
-session cannot renew: when it ends, the tool reports it, the grant ends, and
-the next request is a 401 that sends the client back to sign-in. Each grant has
-its own client + capability registry; each MCP session is bound to its grant.
+**The NodeBB plugin** (`src/plugin/`, `library.cjs`, `plugin.json`, `templates/`,
+`public/`): the forum serves MCP at `/mcp` and is its own OAuth 2.1
+authorization server. Consent is a forum page (`/mcp/connect`) behind the
+forum's own login (so SSO and 2FA just work); allowing mints a NodeBB API token
+for the person, and their tools run the shared code over the forum's own HTTP
+API (loopback) with that token — every call checked by NodeBB as theirs.
+OAuth state (clients, pending consents, codes, grants, hashed tokens) is in the
+forum's database (`src/plugin/store.ts`); the MCP endpoint is stateless (a server
+per request), so multi-process forums need nothing extra. A grant ends when the
+person disconnects it (`/mcp/connections`), an admin revokes it (ACP) or deletes
+its API token, or the client revokes its refresh token. Things that bit:
+- The SDK's `mcpAuthRouter` mounts `/register` at the origin root — NodeBB's
+  sign-up page. Mount the SDK's individual handlers under `/mcp/oauth/` instead.
+- NodeBB is Express 4, the SDK Express 5: only the plugin's own paths are handed
+  to an Express 5 sub-app, and request/response prototypes are restored on the
+  way out. Copy NodeBB's `trust proxy` into it, or rate limits see the proxy.
+- OAuth error text ends up in `WWW-Authenticate`: ASCII only.
+- `meta.settings` saves are published to every process (`action:settings.set.<hash>`
+  over pubsub): subscribe and drop your settings cache, don't poll.
+
+The **stdio** entry (`src/index.ts`) remains for running it on one machine as
+one account (token or password).
 
 Two rules that came out of the e2e runs:
 - A sign-in failure is error kind `sign-in`, never `auth` — several readers
@@ -150,11 +167,12 @@ API (`/api/v3/ping`) explains — `CapabilityRegistry.explainAuthFailure` asks i
 ```
 src/index.ts            stdio entry; logs to stderr only (stdout is the protocol)
 src/server.ts           McpServer + instructions
-src/config.ts           env → Config (NODEBB_URL required; NODEBB_ENABLE_WRITES opt-in, public writes only)
+src/config.ts           env → Config for stdio (the plugin builds its Config from NodeBB's nconf + ACP settings)
 src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid, session retry
 src/session.ts          password sign-in: cookie jar, CSRF, renewal, refusal memory, session file
-src/http.ts             shared HTTP server: OAuth router, sign-in route, per-grant MCP sessions
-src/oauth/              provider (OAuthServerProvider + sign-in), store (hashed tokens, grants), pages
+src/plugin/             the NodeBB plugin: index (routes, pages, ACP, stateless /mcp),
+                        provider (OAuthServerProvider: consent → NodeBB API token), store (db-backed)
+library.cjs, plugin.json, templates/, public/   what NodeBB loads (CommonJS bridge, hooks, pages, ACP JS)
 src/capabilities.ts     probes + verified identity + writes/triage capabilities, TTL-cached
 src/nodebb/forum.ts     topics/posts/search/listings/core writes, normalized
 src/integrations/       qna.ts (answers, unsolved), shotef.ts (status, board, tickets, actions)
@@ -162,7 +180,7 @@ src/research.ts         candidate gathering (search or scan), answer resolution,
 src/tools/              forum-, answer-, triage- (reads), triage-actions (Shotef workflow),
                         write-tools (public, flag-gated) + format.ts
 tests/fake-forum.js     NodeBB v4.16 model over real HTTP (stateful writes)
-tests/e2e/              harness + read / write / core suites against a real forum
+tests/e2e/              harness + read / write / core / plugin / plugin-browser suites against a real forum
 e2e/                    forum.sh, seed.mjs, mint-tokens.cjs, run.sh
 resources/              NodeBB plugin-authoring corpus served as nodebb://plugin-dev/*
 ```

@@ -1,8 +1,8 @@
 /**
- * Drives nodebb-mcp's OAuth flow the way a real MCP client does — with the
+ * Drives the plugin's OAuth flow the way a real MCP client does — with the
  * SDK's own OAuth client (discovery, dynamic registration, PKCE, token
- * exchange, refresh) — and a scripted "browser" standing in for the person who
- * fills in the sign-in page.
+ * exchange, refresh) — and a scripted "browser" standing in for the person, who
+ * signs in to the forum and answers its Connect page.
  */
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -49,61 +49,69 @@ export class TestOAuthClient {
 	}
 }
 
-/**
- * Submit a sign-in page's form the way a browser does: to its `action`,
- * resolved against the URL the page was served from.
- */
-export async function submitSignInForm(pageUrl, html, { username, password, action = 'allow' }) {
-	const request = /name="request" value="([^"]+)"/.exec(html)?.[1];
-	const target = /<form[^>]*action="([^"]*)"/.exec(html)?.[1];
-	if (!request || target === undefined) return { status: 0, html };
-	const form = new URLSearchParams({ request, username, password, action });
-	const res = await fetch(new URL(target, pageUrl), {
+/** A cookie jar for one scripted browser. */
+class Jar {
+	constructor() { this.cookies = new Map(); }
+	header() { return [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; '); }
+	absorb(res) {
+		for (const raw of res.headers.getSetCookie?.() ?? []) {
+			const [pair] = raw.split(';');
+			const at = pair.indexOf('=');
+			if (at > 0) this.cookies.set(pair.slice(0, at).trim(), pair.slice(at + 1).trim());
+		}
+	}
+	async fetch(url, init = {}) {
+		const res = await fetch(url, { ...init, redirect: 'manual', headers: { ...(init.headers ?? {}), cookie: this.header() } });
+		this.absorb(res);
+		return res;
+	}
+}
+
+/** Sign a scripted browser in to the forum, the way NodeBB's login form does. */
+export async function forumSignIn(forumUrl, { username, password }) {
+	const jar = new Jar();
+	const config = await (await jar.fetch(`${forumUrl}/api/config`)).json();
+	const res = await jar.fetch(`${forumUrl}/api/v3/utilities/login`, {
 		method: 'POST',
-		body: form,
-		headers: { 'content-type': 'application/x-www-form-urlencoded' },
-		redirect: 'manual',
+		headers: { 'content-type': 'application/json', 'x-csrf-token': config.csrf_token },
+		body: JSON.stringify({ username, password }),
 	});
-	const location = res.headers.get('location');
-	if (!location) return { status: res.status, html: await res.text(), pageUrl: res.url };
-	const back = new URL(location);
-	return {
-		status: res.status,
-		code: back.searchParams.get('code') ?? undefined,
-		error: back.searchParams.get('error') ?? undefined,
-		state: back.searchParams.get('state') ?? undefined,
-		location: back,
-	};
+	if (!res.ok) throw new Error(`forum sign-in as ${username} failed: HTTP ${res.status} ${await res.text()}`);
+	return jar;
 }
 
 /**
- * The person's browser: open the authorization URL, fill in the sign-in form,
- * and follow it to the redirect. Returns the code (or error) the client gets.
+ * The person's browser: open the authorization URL (signed in to the forum, or
+ * signed in on the way), answer the forum's Connect page, and follow the
+ * redirect back. Returns the code (or error) the client receives.
  */
-export async function signInWithBrowser(authorizationUrl, { username, password, action = 'allow' }) {
-	const page = await fetch(authorizationUrl, { redirect: 'manual' });
+export async function allowInBrowser(authorizationUrl, { forumUrl, username, password, action = 'allow', jar }) {
+	jar ??= await forumSignIn(forumUrl, { username, password });
+	const start = await jar.fetch(authorizationUrl);
+	const connect = start.headers.get('location');
+	if (!connect) return { status: start.status, html: await start.text() };
+	const page = await jar.fetch(new URL(connect, authorizationUrl));
 	const html = await page.text();
 	const request = /name="request" value="([^"]+)"/.exec(html)?.[1];
-	if (!request) return { status: page.status, html };
-
-	const target = /<form[^>]*action="([^"]*)"/.exec(html)?.[1] ?? '';
-	const form = new URLSearchParams({ request, username, password, action });
-	const res = await fetch(new URL(target, page.url), {
+	const csrf = /name="csrf_token" value="([^"]+)"/.exec(html)?.[1];
+	if (!request || !csrf) return { status: page.status, html, location: page.headers.get('location') };
+	const form = /<form[^>]*action="([^"]*\/mcp\/connect)"/.exec(html)?.[1] ?? '/mcp/connect';
+	const res = await jar.fetch(new URL(form, page.url || authorizationUrl), {
 		method: 'POST',
-		body: form,
 		headers: { 'content-type': 'application/x-www-form-urlencoded' },
-		redirect: 'manual',
+		body: new URLSearchParams({ csrf_token: csrf, request, action }),
 	});
 	const location = res.headers.get('location');
-	if (!location) return { status: res.status, html: await res.text(), pageUrl: res.url, signInPage: html };
-	const back = new URL(location);
+	if (!location) return { status: res.status, html: await res.text(), page: html };
+	const back = new URL(location, authorizationUrl);
 	return {
 		status: res.status,
 		code: back.searchParams.get('code') ?? undefined,
 		error: back.searchParams.get('error') ?? undefined,
 		state: back.searchParams.get('state') ?? undefined,
 		location: back,
-		signInPage: html,
+		page: html,
+		jar,
 	};
 }
 
@@ -127,7 +135,7 @@ export async function tryConnect(baseUrl, oauth) {
 export async function connectWithSignIn(baseUrl, credentials, oauth = new TestOAuthClient()) {
 	const first = await tryConnect(baseUrl, oauth);
 	if (first.client) return wrap(first.client, oauth);
-	const signIn = await signInWithBrowser(oauth.authorizationUrl, credentials);
+	const signIn = await allowInBrowser(oauth.authorizationUrl, { forumUrl: baseUrl, ...credentials });
 	if (!signIn.code) {
 		const err = new Error(`sign-in did not return a code (HTTP ${signIn.status})`);
 		err.signIn = signIn;

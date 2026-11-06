@@ -34,7 +34,7 @@ set_ticket_priority and pass_ticket change it. These are the team's own workflow
 timeline are team-only), and Shotef refuses them to anyone outside the handling team.
 
 Public writes — create_topic, reply_to_topic, edit_post, vote_post and mark_solved (which sets
-the thread's accepted answer) — exist only when the operator set NODEBB_ENABLE_WRITES. They are
+the thread's accepted answer) — exist only when the operator turned public writes on. They are
 public the moment they succeed: read the thread first, check find_answers for an existing
 answer before posting a new one, and keep team-only reasoning in add_ticket_note rather than in
 public replies.`;

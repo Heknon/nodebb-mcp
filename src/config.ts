@@ -57,25 +57,12 @@ export interface Config {
 	 */
 	enableWrites: boolean;
 	/**
-	 * Run as a shared HTTP server instead of over stdio. Each person then signs
-	 * in with their own forum account through OAuth (this server is its own
-	 * authorization server, so nothing outside the forum is involved).
+	 * Where requests go, when not to `url`: the NodeBB plugin calls its own forum
+	 * over loopback while citing the public address. Undefined: `url`.
 	 */
-	http: HttpConfig | undefined;
-}
-
-export interface HttpConfig {
-	port: number;
-	/** Interface to bind; 127.0.0.1 unless told otherwise. */
-	host: string;
-	/**
-	 * The URL clients reach this server at — the OAuth issuer, with the MCP
-	 * endpoint at /mcp. An origin only (the OAuth endpoints live at its root).
-	 * Undefined: http://localhost:<bound port>.
-	 */
-	publicUrl: string | undefined;
-	/** Where OAuth clients, hashed tokens and each user's forum session are kept; undefined = memory. */
-	stateFile: string | undefined;
+	apiUrl?: string;
+	/** What to tell someone when public writes are off (how they are turned on differs by mode). */
+	writesOffReason?: string;
 }
 
 export class ConfigError extends Error {}
@@ -134,40 +121,6 @@ function sessionFileFromEnv(env: NodeJS.ProcessEnv, url: string, username: strin
 	return join(cacheHome, 'nodebb-mcp', `session-${key}.json`);
 }
 
-function httpFromEnv(env: NodeJS.ProcessEnv, forumUrl: string): HttpConfig | undefined {
-	const rawPort = env.NODEBB_MCP_HTTP_PORT?.trim();
-	if (!rawPort) return undefined;
-	const port = intFromEnv(env, 'NODEBB_MCP_HTTP_PORT', 0, 0, 65_535);
-	const host = env.NODEBB_MCP_HTTP_HOST?.trim() || '127.0.0.1';
-	const rawPublic = env.NODEBB_MCP_PUBLIC_URL?.trim();
-	let publicUrl: string | undefined;
-	if (rawPublic) {
-		let parsed: URL;
-		try {
-			parsed = new URL(rawPublic);
-		} catch {
-			throw new ConfigError(`NODEBB_MCP_PUBLIC_URL must be an absolute URL, got ${JSON.stringify(rawPublic)}`);
-		}
-		if (parsed.pathname.replace(/\/+$/, '') || parsed.search) {
-			throw new ConfigError(
-				'NODEBB_MCP_PUBLIC_URL must be an origin such as https://mcp.example.com — the OAuth endpoints ' +
-					'live at its root, so serve this server at the root of its own host name.',
-			);
-		}
-		publicUrl = parsed.origin;
-	}
-	const rawState = env.NODEBB_MCP_STATE_FILE?.trim();
-	let stateFile: string | undefined;
-	if (!rawState) {
-		const stateHome = env.XDG_STATE_HOME?.trim() || join(env.HOME?.trim() || homedir(), '.local', 'state');
-		const key = createHash('sha256').update(forumUrl).digest('hex').slice(0, 16);
-		stateFile = join(stateHome, 'nodebb-mcp', `oauth-${key}.json`);
-	} else if (!['off', 'none', 'false', '0'].includes(rawState.toLowerCase())) {
-		stateFile = resolve(rawState);
-	}
-	return { port, host, publicUrl, stateFile };
-}
-
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const url = env.NODEBB_URL?.trim();
 	if (!url) {
@@ -201,6 +154,5 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 		capabilityTtlMs: intFromEnv(env, 'NODEBB_CAPABILITY_TTL_MS', 300_000, 0, 86_400_000),
 		maxPostsPerTopic: intFromEnv(env, 'NODEBB_MAX_POSTS_PER_TOPIC', 50, 1, 200),
 		enableWrites: boolFromEnv(env, 'NODEBB_ENABLE_WRITES'),
-		http: httpFromEnv(env, base),
 	};
 }

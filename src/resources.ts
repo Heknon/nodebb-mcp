@@ -36,7 +36,20 @@ export function resourcesDir(): string {
 	return resolve(here, '../resources');
 }
 
-export async function loadManifest(dir = resourcesDir()): Promise<ManifestEntry[]> {
+const manifests = new Map<string, Promise<ManifestEntry[]>>();
+
+/** The manifest, read once per process (the plugin builds a server for every request). */
+export function loadManifest(dir = resourcesDir()): Promise<ManifestEntry[]> {
+	let manifest = manifests.get(dir);
+	if (!manifest) {
+		manifest = readManifest(dir);
+		manifest.catch(() => manifests.delete(dir));
+		manifests.set(dir, manifest);
+	}
+	return manifest;
+}
+
+async function readManifest(dir: string): Promise<ManifestEntry[]> {
 	const raw = await readFile(join(dir, 'index.json'), 'utf8');
 	const parsed = JSON.parse(raw) as Manifest;
 	if (!parsed || !Array.isArray(parsed.resources)) {

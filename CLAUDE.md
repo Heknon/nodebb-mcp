@@ -16,10 +16,11 @@ If a path below doesn't exist, discover it rather than assume
 | This repo | `/home/user/nodebb-mcp` |
 | Shotef plugin (sibling checkout) | `/home/user/nodebb-shotef` — its own `CLAUDE.md` covers plugin work |
 | NodeBB (v4.x) | `/home/user/NodeBB` |
-| Plugin symlink NodeBB loads | `/home/user/NodeBB/node_modules/nodebb-plugin-shotef` → `/home/user/nodebb-shotef` |
+| Plugin symlinks NodeBB loads | `node_modules/nodebb-plugin-shotef` → `/home/user/nodebb-shotef`; `node_modules/nodebb-plugin-mcp` → **this repo** (it is a NodeBB plugin) |
 | Redis data | `/home/user/NodeBB/redis/dump.rdb` (RDB) |
 | NodeBB log (forum.sh) | `/tmp/nodebb-e2e.log` |
-| Forum | <http://127.0.0.1:4567>, admin `admin` / `Test1234!` |
+| Forum | <http://127.0.0.1:4567>, admin `admin` / `Test1234!`. Its configured `url` is `http://localhost:4567`: OAuth issuer, resource and links use that host |
+| MCP endpoint (this plugin) | <http://localhost:4567/mcp>; ACP → Plugins → MCP; people's page `/mcp/connections` |
 | e2e fixture (ids + API tokens) | `e2e/.fixture.json` (gitignored; written by `e2e/seed.mjs`) |
 | Chromium (if ever needed) | `/opt/pw-browsers/chromium` |
 
@@ -66,12 +67,17 @@ Passwords: every `e2e_*` user's is `fixture.password`; `admin` is `Test1234!`.
 `ipLoginAttempts` on this test forum (NodeBB locks an IP after 20 sign-ins an
 hour, and e2e runs sign in repeatedly from 127.0.0.1).
 
-Run the shared HTTP server against this forum (OAuth sign-in with any `e2e_*`
-user and `fixture.password`):
+The forum serves this repo as `nodebb-plugin-mcp`. After changing it:
+
+| Changed | Then |
+| --- | --- |
+| `src/**` (server code) | `npm run build && e2e/forum.sh restart` (`npm run e2e` does both) |
+| `templates/`, `public/admin.js`, `plugin.json` | `npm run build && e2e/forum.sh build` (rebuilds NodeBB's assets, restarts) |
+
+Connect a real client to it (sign in with any `e2e_*` user and `fixture.password`):
 
 ```bash
-NODEBB_URL=http://127.0.0.1:4567 NODEBB_MCP_HTTP_PORT=8799 NODEBB_MCP_STATE_FILE=off node dist/index.js
-# then: claude mcp add --transport http nodebb http://localhost:8799/mcp  (in a throwaway HOME)
+claude mcp add --transport http forum http://localhost:4567/mcp   # in a throwaway HOME
 ```
 
 ## 4. Traps (each one cost time here)
@@ -89,6 +95,14 @@ NODEBB_URL=http://127.0.0.1:4567 NODEBB_MCP_HTTP_PORT=8799 NODEBB_MCP_STATE_FILE
   `e2e/forum.sh restart`; its unit tests are `cd ../nodebb-shotef && npm test`.
 - **`npm install` inside `/home/user/NodeBB` prunes the Shotef symlink** →
   Shotef routes 404. `e2e/forum.sh up` re-links; then restart.
+- **This repo is ESM (`"type": "module"`), NodeBB is CommonJS.** NodeBB
+  `require()`s `library.cjs`, which `import()`s `dist/plugin/index.js`; and
+  `public/package.json` scopes `public/` back to CommonJS — without it NodeBB's
+  webpack drops the ACP module's `define()` ("define is not defined") and the
+  ACP page silently does nothing.
+- **Nothing that can reach a header may be non-ASCII.** The SDK copies an OAuth
+  error's message into `WWW-Authenticate`; an em dash there made Node refuse to
+  send the 401 at all, and NodeBB answered with an HTML error page.
 - **Out-of-process DB writes are invisible** to the running forum (caches).
   The seed avoids this by writing through the live Write API; if you do write
   Redis directly, restart.

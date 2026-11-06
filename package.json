@@ -1,23 +1,27 @@
 {
-  "name": "nodebb-mcp",
+  "name": "nodebb-plugin-mcp",
   "version": "0.1.0",
-  "description": "MCP server for investigating issues, finding answers, and working triage tickets on a NodeBB forum, with optional Q&A and Shotef integration.",
+  "description": "MCP for NodeBB: the forum serves MCP at /mcp, and each person connects their AI client with their own forum account. Answers, investigations, and Shotef ticket work, within their forum permissions.",
   "type": "module",
   "bin": {
     "nodebb-mcp": "dist/index.js"
   },
-  "main": "dist/index.js",
+  "main": "library.cjs",
   "files": [
     "dist",
     "resources",
+    "templates",
+    "public",
+    "library.cjs",
+    "plugin.json",
     "README.md"
   ],
   "engines": {
     "node": ">=20"
   },
   "scripts": {
-    "build": "tsc",
-    "prepare": "tsc",
+    "build": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\" && tsc",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsc --watch",
     "test": "node --test \"tests/*.test.js\"",
@@ -26,21 +30,24 @@
     "check": "npm run build && npm test"
   },
   "keywords": [
-    "mcp",
     "nodebb",
-    "forum",
-    "model-context-protocol"
+    "nodebb-plugin",
+    "mcp",
+    "model-context-protocol",
+    "forum"
   ],
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "express": "^5.3.0",
-    "express-rate-limit": "8.7.0",
     "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^22.10.0",
     "typescript": "^5.7.2"
+  },
+  "nbbpm": {
+    "compatibility": "^4.0.0"
   }
 }
