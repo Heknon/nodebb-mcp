@@ -31,10 +31,28 @@ import type {
 import type { Config } from '../config.js';
 import { NodeBBError } from '../errors.js';
 import { PasswordSession, SignInError } from '../session.js';
+import { USER_AGENT } from '../version.js';
 import { messagePage, signInPage } from './pages.js';
 import type { Grant, OAuthStore } from './store.js';
 
 export const SCOPE = 'forum';
+
+/**
+ * CSP `form-action` sources for the sign-in page. Browsers apply form-action to
+ * the redirect that *follows* a form submission too, so the client's redirect
+ * target must be allowed or the browser silently blocks the way back (Chromium
+ * then reports the original form URL, hiding the redirect). http(s) targets are
+ * allowed by origin; custom schemes (IDE callbacks such as vscode:) by scheme.
+ */
+export function formActionSources(redirectUri: string): string {
+	try {
+		const target = new URL(redirectUri);
+		if (target.protocol === 'http:' || target.protocol === 'https:') return `'self' ${target.origin}`;
+		return `'self' ${target.protocol}`;
+	} catch {
+		return "'self'";
+	}
+}
 
 /** What a person is told when the forum refuses their sign-in. */
 function signInMessage(err: unknown): string {
@@ -106,7 +124,8 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 		res
 			.status(status)
 			.set('Cache-Control', 'no-store')
-			.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'")
+			.set('Content-Security-Policy',
+				`default-src 'none'; style-src 'unsafe-inline'; form-action ${formActionSources(pending.redirectUri)}; frame-ancestors 'none'`)
 			.set('X-Frame-Options', 'DENY')
 			.type('html')
 			.send(signInPage({
@@ -175,7 +194,10 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 
 	private async lookupUsername(uid: number, typed: string): Promise<string> {
 		try {
-			const res = await fetch(`${this.config.url}/api/v3/users/${uid}`, { signal: AbortSignal.timeout(this.config.timeoutMs) });
+			const res = await fetch(`${this.config.url}/api/v3/users/${uid}`, {
+				headers: { 'user-agent': USER_AGENT },
+				signal: AbortSignal.timeout(this.config.timeoutMs),
+			});
 			const body = await res.json() as { response?: { username?: string } };
 			return body.response?.username || typed;
 		} catch {
@@ -259,7 +281,7 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 		try {
 			const cookie = Object.entries(grant.session.cookies).map(([name, value]) => `${name}=${value}`).join('; ');
 			const res = await fetch(`${this.config.url}/api/config`, {
-				headers: { cookie, accept: 'application/json' },
+				headers: { cookie, accept: 'application/json', 'user-agent': USER_AGENT },
 				signal: AbortSignal.timeout(this.config.timeoutMs),
 			});
 			const config = await res.json() as { uid?: number | string };

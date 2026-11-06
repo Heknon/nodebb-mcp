@@ -53,7 +53,12 @@ wrong); the real forum did none of those. So:
 
 OAuth is tested with the SDK's own OAuth client and a scripted browser
 (`tests/oauth-harness.js`) — unit against the fake, e2e against the real forum
-with the server started as a child process the way it is deployed.
+with the server started as a child process the way it is deployed. A scripted
+browser is not a browser: sign-in once passed every fetch-based test while real
+Chromium could not finish it (a relative form action after an error re-render;
+CSP `form-action` also governing the redirect back to the client, which Chromium
+reports as a block on the *form* URL). `oauth-browser.e2e.test.js` signs in with
+headless Chromium; keep any change to the sign-in page covered there.
 
 `npm run e2e` does all of it: provision if needed → start → build → seed →
 full-stack suites → plugins off → core suite → plugins back on (always, via a

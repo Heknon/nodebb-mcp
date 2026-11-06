@@ -14,7 +14,7 @@ import { join } from 'node:path';
 import { loadConfig } from '../dist/config.js';
 import { startHttpServer } from '../dist/http.js';
 import { PASSWORDS, startFakeForum } from './fake-forum.js';
-import { TestOAuthClient, connectWithSignIn, signInWithBrowser, tryConnect } from './oauth-harness.js';
+import { TestOAuthClient, connectWithSignIn, signInWithBrowser, submitSignInForm, tryConnect } from './oauth-harness.js';
 
 const MAINTAINER = { username: 'maintainer', password: PASSWORDS[8] };
 const OUTSIDER = { username: 'outsider', password: PASSWORDS[9] };
@@ -113,16 +113,12 @@ test('a wrong password re-shows the page with the reason and issues no code', as
 	assert.match(wrong.html, /value="maintainer"/, 'the username is kept');
 	assert.equal(forum.loginAttempts.at(-1).ok, false);
 
-	// The same pending request can still be completed with the right password.
-	const request = /name="request" value="([^"]+)"/.exec(wrong.html)[1];
-	const retry = await fetch(new URL('/oauth/sign-in', server.url), {
-		method: 'POST',
-		body: new URLSearchParams({ request, username: 'maintainer', password: PASSWORDS[8], action: 'allow' }),
-		headers: { 'content-type': 'application/x-www-form-urlencoded' },
-		redirect: 'manual',
-	});
-	assert.equal(retry.status, 302);
-	assert.ok(new URL(retry.headers.get('location')).searchParams.get('code'));
+	// The person retries *from the page they were shown* — its form, its action,
+	// resolved against that page's URL, exactly as a browser submits it.
+	const retry = await submitSignInForm(wrong.pageUrl, wrong.html, { username: 'maintainer', password: PASSWORDS[8] });
+	assert.equal(retry.status, 302, `retry from the error page failed: HTTP ${retry.status}`);
+	assert.ok(retry.code);
+	assert.equal(retry.location.href.split('?')[0], 'http://localhost:53682/callback');
 });
 
 test('cancelling sends the person back with access_denied', async (t) => {
@@ -294,4 +290,23 @@ test('a session that died before the first tool call is reported as such, then t
 	mcp.oauth.authorizationUrl = undefined;
 	await assert.rejects(() => mcp.call('search_tickets'), /Unauthorized/);
 	assert.ok(mcp.oauth.authorizationUrl, 'the client was sent to sign in again');
+});
+
+test('the sign-in page lets the browser follow the redirect back to the client (CSP form-action)', async (t) => {
+	// Browsers apply form-action to the redirect after a form post; 'self' alone
+	// silently blocks the way back to the client. (Caught in a real browser.)
+	const { server } = await setup(t);
+	for (const [redirect, expected] of [
+		['http://localhost:53682/callback', "form-action 'self' http://localhost:53682"],
+		['vscode://anthropic.claude/callback', "form-action 'self' vscode:"],
+	]) {
+		const oauth = new TestOAuthClient('csp', redirect);
+		// eslint-disable-next-line no-await-in-loop
+		await tryConnect(server.url, oauth);
+		// eslint-disable-next-line no-await-in-loop
+		const page = await fetch(oauth.authorizationUrl);
+		assert.match(page.headers.get('content-security-policy'), new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+		// eslint-disable-next-line no-await-in-loop
+		assert.match(await page.text(), /<form method="post" action="\/oauth\/sign-in"/, 'an absolute form action');
+	}
 });

@@ -13,20 +13,21 @@ const REDIRECT = 'http://localhost:53682/callback';
 
 /** An in-memory OAuthClientProvider: the client's side of the flow. */
 export class TestOAuthClient {
-	constructor(name = 'nodebb-mcp test client') {
+	constructor(name = 'nodebb-mcp test client', redirect = REDIRECT) {
 		this.name = name;
+		this.redirect = redirect;
 		this.info = undefined;
 		this.saved = undefined;
 		this.verifier = undefined;
 		this.authorizationUrl = undefined;
 	}
 
-	get redirectUrl() { return REDIRECT; }
+	get redirectUrl() { return this.redirect; }
 
 	get clientMetadata() {
 		return {
 			client_name: this.name,
-			redirect_uris: [REDIRECT],
+			redirect_uris: [this.redirect],
 			grant_types: ['authorization_code', 'refresh_token'],
 			response_types: ['code'],
 			token_endpoint_auth_method: 'none',
@@ -49,6 +50,33 @@ export class TestOAuthClient {
 }
 
 /**
+ * Submit a sign-in page's form the way a browser does: to its `action`,
+ * resolved against the URL the page was served from.
+ */
+export async function submitSignInForm(pageUrl, html, { username, password, action = 'allow' }) {
+	const request = /name="request" value="([^"]+)"/.exec(html)?.[1];
+	const target = /<form[^>]*action="([^"]*)"/.exec(html)?.[1];
+	if (!request || target === undefined) return { status: 0, html };
+	const form = new URLSearchParams({ request, username, password, action });
+	const res = await fetch(new URL(target, pageUrl), {
+		method: 'POST',
+		body: form,
+		headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		redirect: 'manual',
+	});
+	const location = res.headers.get('location');
+	if (!location) return { status: res.status, html: await res.text(), pageUrl: res.url };
+	const back = new URL(location);
+	return {
+		status: res.status,
+		code: back.searchParams.get('code') ?? undefined,
+		error: back.searchParams.get('error') ?? undefined,
+		state: back.searchParams.get('state') ?? undefined,
+		location: back,
+	};
+}
+
+/**
  * The person's browser: open the authorization URL, fill in the sign-in form,
  * and follow it to the redirect. Returns the code (or error) the client gets.
  */
@@ -58,15 +86,16 @@ export async function signInWithBrowser(authorizationUrl, { username, password, 
 	const request = /name="request" value="([^"]+)"/.exec(html)?.[1];
 	if (!request) return { status: page.status, html };
 
+	const target = /<form[^>]*action="([^"]*)"/.exec(html)?.[1] ?? '';
 	const form = new URLSearchParams({ request, username, password, action });
-	const res = await fetch(new URL('/oauth/sign-in', authorizationUrl), {
+	const res = await fetch(new URL(target, page.url), {
 		method: 'POST',
 		body: form,
 		headers: { 'content-type': 'application/x-www-form-urlencoded' },
 		redirect: 'manual',
 	});
 	const location = res.headers.get('location');
-	if (!location) return { status: res.status, html: await res.text(), signInPage: html };
+	if (!location) return { status: res.status, html: await res.text(), pageUrl: res.url, signInPage: html };
 	const back = new URL(location);
 	return {
 		status: res.status,

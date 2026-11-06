@@ -12,9 +12,9 @@ const escape = (value: string) => value
 	.replace(/'/g, '&#39;');
 
 const STYLE = `
-:root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#5b6475; --line:#d9dde5; --accent:#2f6fde; --danger:#b42318; }
+:root { --bg:#f6f7f9; --card:#fff; --text:#1d2330; --muted:#5b6475; --line:#d9dde5; --accent:#2f6fde; --on-accent:#fff; --danger:#b42318; }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#14171c; --card:#1d2128; --text:#e7eaf0; --muted:#9aa3b2; --line:#323844; --accent:#6d9cff; --danger:#ff8a80; }
+  :root { --bg:#14171c; --card:#1d2128; --text:#e7eaf0; --muted:#9aa3b2; --line:#323844; --accent:#6d9cff; --on-accent:#0b1426; --danger:#ff8a80; }
 }
 * { box-sizing: border-box; }
 body { margin:0; min-height:100vh; display:grid; place-items:center; padding:16px;
@@ -29,7 +29,7 @@ input:focus { outline:2px solid var(--accent); outline-offset:1px; }
 .error { color:var(--danger); background:color-mix(in srgb, var(--danger) 10%, transparent); border-radius:8px; padding:10px 12px; margin:0 0 8px; }
 .actions { display:flex; gap:10px; margin-top:20px; }
 button { flex:1; padding:10px 12px; border-radius:8px; font:inherit; font-weight:600; cursor:pointer; border:1px solid var(--line); background:transparent; color:var(--text); }
-button.primary { background:var(--accent); border-color:var(--accent); color:#fff; }
+button.primary { background:var(--accent); border-color:var(--accent); color:var(--on-accent); }
 .fine { font-size:13px; margin:16px 0 0; }
 `;
 
@@ -63,7 +63,7 @@ export function signInPage(view: SignInPage): string {
 <p><strong>${escape(view.clientName)}</strong> wants to use the forum as you: read what you can read,
 and act where your account may act. You will be sent back to <strong>${escape(view.redirectHost)}</strong>.</p>
 ${view.error ? `<p class="error" role="alert">${escape(view.error)}</p>` : ''}
-<form method="post" action="oauth/sign-in" autocomplete="on">
+<form method="post" action="/oauth/sign-in" autocomplete="on">
   <input type="hidden" name="request" value="${escape(view.requestId)}">
   <label for="username">Forum username</label>
   <input id="username" name="username" autocomplete="username" required value="${escape(view.username ?? '')}" ${view.username ? '' : 'autofocus'}>
