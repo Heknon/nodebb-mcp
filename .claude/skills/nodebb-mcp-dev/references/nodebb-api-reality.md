@@ -101,6 +101,10 @@ cache, so a NodeBB-context script can mint them behind a running forum
 - **≤ 0.2.0 ignored API tokens**: routes were bare `router.get`, which skips
   `authenticateRequest`. `/ping` → `{ ok: 1, uid: 0 }` even for an admin token.
   → the probe compares ping's uid with the verified uid and warns.
+- **Administrators count as members and managers of every team**
+  (`Store.isMember`/`isManager` fall back to `isAdministrator`), so an admin
+  token can work any ticket and sees every board. A server that must stay off
+  the board needs a non-admin user on no team.
 - **Board**: `{ teams, me, team: { id, name }, columns: [{ key, label, class,
   publicStatus, count, cards: [...] }], backlog: [...same, parked lanes],
   intake: [...cards], shotef: { username } | null, isManager, … }`. A viewer on no
