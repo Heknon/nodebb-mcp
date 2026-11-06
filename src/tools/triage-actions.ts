@@ -70,14 +70,14 @@ async function runAction(
 			// which team takes it. Without a team given, use the one of the user's teams
 			// that holds it — when there is exactly one.
 			if (!('teamId' in action) || action.teamId || !isShotefRefusal(err, 'err-not-owning-team')) throw err;
-			const teams = await intakeTeamsFor(ctx.client, ctx.config, caps, tid).catch(() => []);
+			// If the lookup itself fails, Shotef's own refusal (and its advice) is the better answer.
+			const teams = await intakeTeamsFor(ctx.client, ctx.config, caps, tid).catch(() => { throw err; });
 			if (teams.length !== 1) {
 				const which = teams.map(team => `${team.name} (\`${team.id}\`)`).join(', ');
-				throw new NodeBBError('auth', teams.length
+				// A missing argument or a team you are not on — not a sign-in problem.
+				throw new NodeBBError('bad-request', teams.length
 					? `Ticket ${tid} is in the intake of several of your teams: ${which}. Say which takes it with team.`
-					: `Ticket ${tid} is in the intake lane of teams you are not on, so you cannot take it.`, {
-					forumMessage: teams.length ? undefined : (err as NodeBBError).forumMessage,
-				});
+					: `Ticket ${tid} is in the intake lane of teams you are not on, so you cannot take it.`);
 			}
 			const [only] = teams as [{ id: string; name: string }];
 			await applyTicketAction(ctx.client, ctx.config, tid, { ...action, teamId: only.id });

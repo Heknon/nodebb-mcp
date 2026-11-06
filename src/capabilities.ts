@@ -354,6 +354,14 @@ export class CapabilityRegistry {
 
 	private async probeShotef(forum: ForumInfo): Promise<{ shotef: Capability; ticketApi: boolean }> {
 		const ns = this.config.shotefNamespace;
+		// The ticket routes arrived with Shotef's HTTP API. Ticket 0 never exists: a
+		// build that has them refuses it with a 400 before any lookup; one that does
+		// not answers NodeBB's own 404 (whose text is translated, so only the status
+		// counts). Probed alongside the ping.
+		const ticketProbe = this.client.request(`/api/v3/plugins/${ns}/tickets/0`).then(
+			() => true,
+			(err: unknown) => !(err instanceof NodeBBError && err.kind === 'not-found'),
+		);
 		let shotef: Capability = AVAILABLE;
 		try {
 			const ping = await this.client.v3<Raw>(`/plugins/${ns}/ping`);
@@ -370,16 +378,9 @@ export class CapabilityRegistry {
 				};
 			}
 		} catch (err) {
+			await ticketProbe;
 			return { shotef: classify(err, 'The Shotef triage plugin is not active on this forum.'), ticketApi: false };
 		}
-		// The ticket routes arrived with the same change. Ticket 0 never exists: a
-		// build that has them refuses it (400); one that does not answers NodeBB's 404.
-		let ticketApi = true;
-		try {
-			await this.client.request(`/api/v3/plugins/${ns}/tickets/0`);
-		} catch (err) {
-			ticketApi = !(err instanceof NodeBBError && err.kind === 'not-found' && /Invalid API call/i.test(err.forumMessage ?? err.message));
-		}
-		return { shotef, ticketApi };
+		return { shotef, ticketApi: await ticketProbe };
 	}
 }

@@ -285,8 +285,9 @@ export class PasswordSession {
 			if (!/^\d+$/.test(String(config.uid ?? '')) || typeof config.csrf_token !== 'string') return undefined;
 			if (Number(config.uid) !== this.uid) return false;
 			// Still ours. Take its current CSRF token (a cached one can be stale) —
-			// unless a sign-in since then made this answer another session's.
-			if (generation === this.generation) {
+			// unless a sign-in started or finished meanwhile: the answer is then about
+			// the old session, and its token would break the new one.
+			if (generation === this.generation && !this.signingIn) {
 				this.confirm();
 				if (config.csrf_token !== this.csrf) {
 					this.csrf = config.csrf_token;

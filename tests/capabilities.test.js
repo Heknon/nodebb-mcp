@@ -167,6 +167,19 @@ test('a Shotef that ignores API tokens is flagged', async (t) => {
 	assert.match(caps.triage.reason, /no HTTP ticket API .* the board stays readable\. Update Shotef/);
 });
 
+test('the ticket-API check reads the status, not NodeBB\'s (translated) 404 text', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	// A pre-API Shotef on a German forum: NodeBB's own 404, in German.
+	forum.interceptNext('/api/v3/plugins/shotef/tickets/0', 404, {
+		contentType: 'application/json',
+		text: JSON.stringify({ status: { code: 'not-found', message: 'Ungültiger API-Aufruf' }, response: {} }),
+	});
+	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(caps.triage.state, 'absent');
+	assert.match(caps.triage.reason, /no HTTP ticket API/);
+});
+
 test('without the ticket API, ticket actions are refused up front with the reason, not a bare 404', async (t) => {
 	const forum = await startFakeForum({ shotefIgnoresTokens: true });
 	const mcp = await connect(forum.url, { NODEBB_API_TOKEN: 'admin-token' });

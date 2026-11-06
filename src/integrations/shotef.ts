@@ -596,10 +596,7 @@ const SHOTEF_ADVICE: [key: string, english: string, advice: string][] = [
 
 /** Is `err` Shotef's refusal `key` (raw key, or its English translation)? */
 export function isShotefRefusal(err: unknown, key: string): boolean {
-	if (!(err instanceof NodeBBError)) return false;
-	const english = SHOTEF_ADVICE.find(([known]) => known === key)?.[1];
-	const said = `${err.forumMessage ?? ''}\n${err.message}`;
-	return said.includes(`[[shotef:${key}]]`) || Boolean(english && said.includes(english));
+	return err instanceof NodeBBError && shotefRefusal(err.forumMessage ?? err.message)?.[0] === key;
 }
 
 /** The acting user's teams that hold this ticket in their intake lane. */
@@ -640,8 +637,12 @@ export async function openTicket(
 	}
 }
 
-export function explainShotefError(message: string | undefined): string | undefined {
+/** The Shotef refusal a forum message carries, by raw key or English translation. */
+function shotefRefusal(message: string | undefined): (typeof SHOTEF_ADVICE)[number] | undefined {
 	if (!message) return undefined;
-	const hit = SHOTEF_ADVICE.find(([key, english]) => message.includes(`[[shotef:${key}]]`) || message.startsWith(english));
-	return hit?.[2];
+	return SHOTEF_ADVICE.find(([key, english]) => message.includes(`[[shotef:${key}]]`) || message.includes(english));
+}
+
+export function explainShotefError(message: string | undefined): string | undefined {
+	return shotefRefusal(message)?.[2];
 }
