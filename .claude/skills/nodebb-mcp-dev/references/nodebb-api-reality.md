@@ -162,7 +162,10 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
   name }]`), taken by none. `GET /tickets/:tid` works without `?team=` only for
   the *first* owner's members — and reports that team as `handlingTeam` with
   `readOnly: true, contended: true`; other owners' members get 403 unless they
-  pass `?team=<their team>`. Every action but a claim is refused (403). A claim
+  pass `?team=<their team>`. Other owners' members can do nothing but claim
+  (403); the first owner's members, oddly, can also note and move it without
+  taking it (Shotef resolves the team as `handlingTeam || team`), though
+  `GET /tickets/:tid` hides those notes until it is taken. A claim
   needs `teamId` — without it, 403 "Your team doesn't own this ticket's
   category" — and takes the ticket for that team. → `openTicket` retries from
   the user's intake; `assign_ticket` resolves the team when only one fits.
