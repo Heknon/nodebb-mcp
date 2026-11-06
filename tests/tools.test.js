@@ -21,6 +21,8 @@ test('the server advertises every tool, prompt and documentation resource', asyn
 	const { tools } = await mcp.client.listTools();
 	const names = tools.map(tool => tool.name).sort();
 	assert.deepEqual(names, [
+		'add_ticket_note',
+		'assign_ticket',
 		'find_answers',
 		'forum_capabilities',
 		'get_post',
@@ -33,17 +35,28 @@ test('the server advertises every tool, prompt and documentation resource', asyn
 		'list_categories',
 		'list_recent_topics',
 		'list_unanswered_questions',
+		'pass_ticket',
 		'search_forum',
+		'set_ticket_priority',
+		'set_ticket_status',
 	]);
+	// Without NODEBB_ENABLE_WRITES the only tools that change anything are the
+	// Shotef team-workflow actions — never public content.
+	const TRIAGE_ACTIONS = ['add_ticket_note', 'assign_ticket', 'pass_ticket', 'set_ticket_priority', 'set_ticket_status'];
 	for (const tool of tools) {
 		assert.ok(tool.description && tool.description.length > 40, `${tool.name} needs a real description`);
 		assert.ok(tool.inputSchema, `${tool.name} needs an input schema`);
-		// Without NODEBB_ENABLE_WRITES nothing advertised may change the forum.
-		assert.equal(tool.annotations?.readOnlyHint, true, `${tool.name} must be read-only`);
+		const isAction = TRIAGE_ACTIONS.includes(tool.name);
+		assert.equal(tool.annotations?.readOnlyHint, !isAction, `${tool.name} readOnlyHint`);
+		if (isAction) assert.equal(tool.annotations.destructiveHint, false, `${tool.name} is not destructive`);
 	}
 
 	const { prompts } = await mcp.client.listPrompts();
-	assert.deepEqual(prompts.map(p => p.name).sort(), ['answer_forum_question', 'investigate_report']);
+	assert.deepEqual(prompts.map(p => p.name).sort(), ['answer_forum_question', 'investigate_report', 'work_ticket']);
+	// Read-only for public content: the ticket workflow drafts the reply instead of posting it.
+	const prompt = await mcp.client.getPrompt({ name: 'work_ticket', arguments: { tid: '11' } });
+	assert.match(prompt.messages[0].content.text, /draft the public reply for a person to post/);
+	assert.ok(!prompt.messages[0].content.text.includes('reply_to_topic'));
 
 	const { resources } = await mcp.client.listResources();
 	assert.equal(resources.length, 10);
@@ -67,7 +80,9 @@ test('forum_capabilities reports a healthy forum', async (t) => {
 	assert.match(text, /Full-text search \| ✅ available/);
 	assert.match(text, /Q&A \(accepted answers\) \| ✅ available/);
 	assert.match(text, /Shotef \(triage board\) \| ✅ available/);
-	assert.match(text, /Writes \(post, vote, triage\) \| ⚠️ absent \| Read-only mode/);
+	// Triage is the team's workflow and needs no writes flag; public writes do.
+	assert.match(text, /Triage actions \(notes, status, assign, priority, pass\) \| ✅ available/);
+	assert.match(text, /Public writes \(post, reply, edit, vote, accept answer\) \| ⚠️ absent \| Public writes are off/);
 });
 
 test('search_forum returns ranked hits with snippets and solved markers', async (t) => {
@@ -184,7 +199,7 @@ test('get_triage_board groups tickets by column, backlog included, closed hidden
 	assert.match(text, /#14 Avatar upload fails/);
 	assert.ok(!text.includes('#10 Redis'), 'closed tickets are hidden by default');
 	assert.match(text, /1 closed ticket\(s\) hidden/);
-	assert.match(text, /Status keys for update_ticket: `todo`, `in_work`/);
+	assert.match(text, /Status keys for set_ticket_status: `todo`, `in_work`/);
 
 	const withClosed = await mcp.call('get_triage_board', { include_closed: true });
 	assert.match(withClosed.text, /## Closed `closed` \(1\)/);

@@ -34,7 +34,7 @@ async function main(): Promise<void> {
 
 	await server.connect(new StdioServerTransport());
 	log(`v${SERVER_VERSION} ready, serving ${config.url}${config.token ? ' (token configured)' : ' (anonymous)'}` +
-		`${config.enableWrites ? ', writes enabled' : ', read-only'}`);
+		`${config.enableWrites ? ', public writes enabled' : ', public writes off'}`);
 
 	// Warm the capability cache so the first tool call is not paying for the
 	// probe sweep. Failure here is not fatal: tools re-probe and report.

@@ -1,7 +1,8 @@
 /**
- * The write tools, against the fake forum. These pin the contract: writes are
- * opt-in, refuse cleanly without a verified identity, report every refusal
- * with advice, and leave the forum in the state they claim.
+ * The public write tools, against the fake forum. These pin the contract:
+ * public writes are opt-in, refuse cleanly without a verified identity, report
+ * every refusal with advice, and leave the forum in the state they claim.
+ * (Shotef's team-workflow actions are not behind the flag: triage-actions.test.js.)
  */
 
 import test from 'node:test';
@@ -10,9 +11,7 @@ import assert from 'node:assert/strict';
 import { startFakeForum } from './fake-forum.js';
 import { connect } from './mcp-harness.js';
 
-const WRITE_TOOLS = [
-	'create_topic', 'edit_post', 'mark_solved', 'pass_ticket', 'reply_to_topic', 'update_ticket', 'vote_post',
-];
+const PUBLIC_WRITES = ['create_topic', 'edit_post', 'mark_solved', 'reply_to_topic', 'vote_post'];
 
 async function writable(t, env = {}, forumOpts = {}) {
 	const forum = await startFakeForum(forumOpts);
@@ -24,29 +23,29 @@ async function writable(t, env = {}, forumOpts = {}) {
 	return { forum, mcp };
 }
 
-test('write tools are not advertised unless NODEBB_ENABLE_WRITES is set', async (t) => {
+test('public write tools are not advertised unless NODEBB_ENABLE_WRITES is set', async (t) => {
 	const forum = await startFakeForum();
 	const mcp = await connect(forum.url, { NODEBB_API_TOKEN: 'admin-token' });
 	t.after(async () => { await mcp.close(); await forum.close(); });
 
 	const { tools } = await mcp.client.listTools();
-	for (const name of WRITE_TOOLS) assert.ok(!tools.some(tool => tool.name === name), `${name} leaked`);
+	for (const name of PUBLIC_WRITES) assert.ok(!tools.some(tool => tool.name === name), `${name} leaked`);
 });
 
-test('with writes enabled every write tool is advertised and annotated as a write', async (t) => {
+test('with writes enabled every public write tool is advertised and annotated as a write', async (t) => {
 	const { mcp } = await writable(t);
 	const { tools } = await mcp.client.listTools();
-	for (const name of WRITE_TOOLS) {
+	for (const name of PUBLIC_WRITES) {
 		const tool = tools.find(candidate => candidate.name === name);
 		assert.ok(tool, `${name} missing`);
 		assert.equal(tool.annotations.readOnlyHint, false, name);
 	}
 	assert.equal(tools.find(tool => tool.name === 'edit_post').annotations.destructiveHint, true);
+	assert.ok(!tools.some(tool => tool.name === 'update_ticket'), 'the bundled tool is gone, not kept alongside');
 
-	const { prompts } = await mcp.client.listPrompts();
-	assert.deepEqual(prompts.map(p => p.name).sort(), ['answer_forum_question', 'investigate_report', 'work_ticket']);
 	const prompt = await mcp.client.getPrompt({ name: 'work_ticket', arguments: { tid: '13' } });
 	assert.match(prompt.messages[0].content.text, /Work support ticket #13/);
+	assert.match(prompt.messages[0].content.text, /reply_to_topic with the answer/);
 	assert.match(prompt.messages[0].content.text, /mark_solved/);
 });
 
@@ -55,7 +54,7 @@ test('a guest cannot write, and is told why before anything is sent', async (t) 
 	const before = forum.requests.filter(r => r.method !== 'GET').length;
 	const { text, isError } = await mcp.call('reply_to_topic', { tid: 12, content: 'hello' });
 	assert.equal(isError, true);
-	assert.match(text, /Writes are not possible/);
+	assert.match(text, /Public writes are not possible/);
 	assert.match(text, /NODEBB_API_TOKEN/);
 	assert.equal(forum.requests.filter(r => r.method !== 'GET').length, before, 'no write may be attempted');
 });
@@ -117,37 +116,11 @@ test('edit_post replaces the body', async (t) => {
 	assert.match(forum.topics[12].posts[0].content, /Hello, everyone!/);
 });
 
-test('update_ticket applies several changes in order and shows the result', async (t) => {
-	const { forum, mcp } = await writable(t);
-	const { text, isError } = await mcp.call('update_ticket', {
-		tid: 13, owner: 'me', priority: 'urgent', note: 'Checking the SMTP plugin first.', status: 'in_work',
-	});
-	assert.equal(isError, false, text);
-	assert.match(text, /✅ claim\n- ✅ priority → urgent\n- ✅ internal note\n- ✅ status → in_work/);
-	assert.match(text, /\*\*Now:\*\* `in_work` \(In progress\) · owner: admin · priority: urgent/);
-	assert.equal(forum.tickets[13].claimedBy, 1);
-	assert.equal(forum.notes[13][0].body, 'Checking the SMTP plugin first.');
-
-	const ticket = await mcp.call('get_ticket', { tid: 13 });
-	assert.match(ticket.text, /admin: Checking the SMTP plugin first\./);
-	assert.match(ticket.text, /status_change: todo → in_work/);
-});
-
-test('update_ticket reports a partial failure without hiding what succeeded', async (t) => {
-	const { forum, mcp } = await writable(t);
-	const { text, isError } = await mcp.call('update_ticket', { tid: 13, priority: 'high', status: 'no-such-column' });
-	assert.equal(isError, false, 'some changes were applied');
-	assert.match(text, /✅ priority → high/);
-	assert.match(text, /❌ status → no-such-column — Unknown status Use a column key from get_triage_board/);
-	assert.match(text, /1 of 2 changes were refused/);
-	assert.equal(forum.tickets[13].priority, 'high');
-});
-
-test('closing an unsolved question is refused until an answer is accepted', async (t) => {
+test('mark_solved accepts an answer, unlocking a resolved close', async (t) => {
 	const { forum, mcp } = await writable(t);
 	forum.topics[11].posts.push({ pid: 111, index: 1, uid: 8, timestamp: 1, votes: 0, content: '<p>Recreate it.</p>' });
 
-	const refused = await mcp.call('update_ticket', { tid: 11, status: 'closed' });
+	const refused = await mcp.call('set_ticket_status', { tid: 11, status: 'closed' });
 	assert.equal(refused.isError, true);
 	assert.match(refused.text, /Mark this question as solved before closing it/);
 	assert.match(refused.text, /mark_solved/);
@@ -155,8 +128,9 @@ test('closing an unsolved question is refused until an answer is accepted', asyn
 	const solved = await mcp.call('mark_solved', { tid: 11, pid: 111 });
 	assert.equal(solved.isError, false, solved.text);
 	assert.match(solved.text, /accepting post 111 as the answer/);
+	assert.match(solved.text, /closed as resolved with set_ticket_status/);
 
-	const closed = await mcp.call('update_ticket', { tid: 11, status: 'closed' });
+	const closed = await mcp.call('set_ticket_status', { tid: 11, status: 'closed' });
 	assert.equal(closed.isError, false, closed.text);
 	assert.match(closed.text, /\*\*Now:\*\* `closed` \(Closed\) · closed: resolved/);
 
@@ -164,36 +138,6 @@ test('closing an unsolved question is refused until an answer is accepted', asyn
 	const answer = await mcp.call('get_topic_answer', { tid: 11 });
 	assert.match(answer.text, /## Answer \(accepted answer\)/);
 	assert.match(answer.text, /Recreate it\./);
-});
-
-test('a no-response close skips the accept-an-answer gate', async (t) => {
-	const { forum, mcp } = await writable(t);
-	const { isError, text } = await mcp.call('update_ticket', { tid: 11, status: 'closed', close_reason: 'no_response' });
-	assert.equal(isError, false, text);
-	assert.equal(forum.tickets[11].closeReason, 'no_response');
-});
-
-test('a non-member is refused triage actions, with advice', async (t) => {
-	const { mcp } = await writable(t, { NODEBB_API_TOKEN: 'outsider-token' });
-	const { text, isError } = await mcp.call('update_ticket', { tid: 13, owner: 'me' });
-	assert.equal(isError, true);
-	assert.match(text, /❌ claim — You are not a member of this team/);
-	assert.match(text, /not on the team handling this ticket/);
-});
-
-test('assigning someone else needs a manager', async (t) => {
-	const { forum, mcp } = await writable(t, { NODEBB_API_TOKEN: 'maintainer-token' });
-	const { text } = await mcp.call('update_ticket', { tid: 13, owner: 1 });
-	assert.match(text, /❌ assign to uid 1 — Only a team manager can do that/);
-	assert.equal(forum.tickets[13].claimedBy, 0);
-});
-
-test('triage writes explain themselves on a forum without Shotef', async (t) => {
-	const { mcp } = await writable(t, {}, { plugins: { shotef: false } });
-	const { text, isError } = await mcp.call('update_ticket', { tid: 13, status: 'in_work' });
-	assert.equal(isError, true);
-	assert.match(text, /Triage actions need the Shotef plugin/);
-	assert.match(text, /reply_to_topic/);
 });
 
 test('mark_solved explains a forum without Q&A', async (t) => {

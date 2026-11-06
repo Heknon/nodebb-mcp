@@ -5,9 +5,10 @@ tickets on a NodeBB forum**.
 
 Point it at a forum and it searches the forum's own history, extracts the answers
 that already exist, and says what is still open — so a question gets answered from
-what the community already worked out rather than from guesswork. With writes
-enabled it can also act: post, reply, vote, and move tickets through a Shotef
-triage board.
+what the community already worked out rather than from guesswork. On a forum
+with the Shotef triage plugin it also works tickets — internal notes, status,
+ownership, priority — as a team member; with public writes enabled it can post,
+reply, vote and accept answers too.
 
 It integrates with two optional NodeBB plugins for sharper results, and **works
 without either of them**.
@@ -25,7 +26,7 @@ npm install && npm run build
 | `NODEBB_URL` | yes | — | Forum root, e.g. `https://forum.example.com` (a subdirectory mount is fine) |
 | `NODEBB_API_TOKEN` | no | — | Bearer token from ACP → Settings → API Access. Without it the server is a guest: public content only, and no search (guests lack `search:content` by default) |
 | `NODEBB_UID` | no | — | Acting uid. Required when the token is a **master** token; ignored for user tokens |
-| `NODEBB_ENABLE_WRITES` | no | off | `1`/`true` registers the write tools. Off, nothing advertised can change the forum |
+| `NODEBB_ENABLE_WRITES` | no | off | `1`/`true` registers the **public** write tools (post, reply, edit, vote, accept an answer). Off, nothing can change what the forum's readers see. Shotef's team-workflow actions don't need it |
 | `NODEBB_TIMEOUT_MS` | no | `15000` | Per-request timeout |
 | `NODEBB_MAX_POSTS_PER_TOPIC` | no | `50` | Cap on posts pulled per topic |
 | `NODEBB_CAPABILITY_TTL_MS` | no | `300000` | How long plugin detection is cached |
@@ -74,10 +75,21 @@ Add it to an MCP client:
 | Tool | Does |
 | --- | --- |
 | `get_triage_status` | Is anyone working on this topic, and was it resolved |
-| `get_triage_board` | The team's board: active columns, parked backlog, intake; the status keys `update_ticket` takes |
+| `get_triage_board` | The team's board: active columns, parked backlog, intake; the status keys `set_ticket_status` takes |
 | `get_ticket` | A ticket in full for team members: status, owner, audit timeline, internal notes |
 
-**Writing** — only with `NODEBB_ENABLE_WRITES=1`, as the token's user
+**Working tickets** (Shotef) — the team's own workflow, so **no writes flag needed**: a team
+member's token and Shotef's own authorization are enough. One action per tool.
+
+| Tool | Does |
+| --- | --- |
+| `add_ticket_note` | Internal note, visible to the handling team only |
+| `set_ticket_status` | Move to a column; close as resolved or no-response (an unsolved question can't close as resolved); optional reason on the timeline |
+| `assign_ticket` | Claim (`me`), release (`nobody`), or assign a teammate (managers) |
+| `set_ticket_priority` | Priority and/or the help-wanted flag |
+| `pass_ticket` | Hand a ticket to another team |
+
+**Public writes** — only with `NODEBB_ENABLE_WRITES=1`, as the token's user
 
 | Tool | Does |
 | --- | --- |
@@ -85,9 +97,7 @@ Add it to an MCP client:
 | `reply_to_topic` | Public reply; reports the ticket move it caused (Shotef's ball-in-court routing) |
 | `edit_post` | Replace a post's body (and a first post's title) |
 | `vote_post` | Up / down / withdraw |
-| `update_ticket` | Any of: status (incl. close as resolved / no-response), claim / release / assign, priority, help-wanted, internal note — each reported separately |
-| `mark_solved` | Accept a reply as a question's answer (Q&A + Shotef) |
-| `pass_ticket` | Hand a ticket to another team |
+| `mark_solved` | Accept a reply as a question's answer — shown on the public thread (Q&A + Shotef) |
 
 **Diagnostics**
 
@@ -96,8 +106,8 @@ Add it to an MCP client:
 | `forum_capabilities` | Which features are live, who the forum says we are, and what is missing |
 
 Prompts encode the usual tool order for each workflow: `answer_forum_question`,
-`investigate_report`, and — with writes enabled — `work_ticket` (research,
-answer, accept, close).
+`investigate_report`, and `work_ticket` (research, answer, accept, close — with
+public writes off, it drafts the reply into an internal note for a person to post).
 
 ## Optional integrations, and life without them
 
@@ -110,7 +120,7 @@ mistaken for a confident one.
 | --- | --- | --- | --- |
 | **Search plugin** (`nodebb-plugin-dbsearch`, a NodeBB v4 default) | `/api/config` → `searchEnabled`, then `GET /api/search` for the privilege | Real relevance ranking over titles and post bodies | Falls back to scanning recent-topic listings and ranking titles by term overlap; says it can only see recent activity |
 | **`nodebb-plugin-question-and-answer`** | `/api/config` → `question-and-answer` key (else `GET /api/unsolved`) | Author-**accepted** answers; a real unsolved queue; solved markers; `mark_solved` | Uses the most-upvoted reply, explicitly labelled *not marked accepted*; approximates the queue with reply-less topics; ignores Q&A fields left behind on topics |
-| **Shotef triage** | `GET /api/v3/plugins/shotef/ping` | Workflow stage, team, board, tickets, and the triage write tools | Reports triage as unknowable here and points you at the thread itself |
+| **Shotef triage** | `GET /api/v3/plugins/shotef/ping` | Workflow stage, team, board, tickets, and the ticket-working tools | Reports triage as unknowable here and points you at the thread itself |
 
 NodeBB core ships **no search of its own** — its search controller 404s unless a
 plugin listens on `filter:search.query` — which is why search is treated as
@@ -126,8 +136,16 @@ added alongside a fix that makes its routes honour API tokens at all). Older
 Shotef releases treat every token as a guest; `forum_capabilities` warns when it
 detects one.
 
-Writes follow the forum's permissions, not the server's: posting needs the
-user's NodeBB privileges, and every triage action is checked by Shotef (team
+**Where the line is.** `NODEBB_ENABLE_WRITES` guards what the public sees: posts,
+replies, edits, votes, and the accepted answer on a thread. Working a ticket
+(notes, status, ownership, priority, passing) is the team's own state, so it is
+available whenever Shotef is live and the token belongs to a team member. The
+reporter sees only the coarse stage ("in progress", "closed"), and Shotef notifies
+them when it changes. A deployment that must not touch the board at all should
+use a token outside the triage teams.
+
+Everything follows the forum's permissions, not the server's: posting needs the
+user's NodeBB privileges, and every ticket action is checked by Shotef (team
 membership; a manager to assign someone else; an unsolved question cannot be
 closed as resolved until an answer is accepted). A refusal comes back with the
 forum's reason and what to do about it.

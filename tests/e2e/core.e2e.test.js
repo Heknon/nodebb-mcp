@@ -95,7 +95,11 @@ test('core writes still work; triage writes explain the missing plugin', opts, a
 	assert.match(reply.text, /Replied to topic #\d+ as e2e_maintainer/);
 	assert.ok(!/Triage:/.test(reply.text));
 
-	const update = await writer.call('update_ticket', { tid: T().symlink.tid, status: 'closed' });
+	const update = await writer.call('set_ticket_status', { tid: T().symlink.tid, status: 'closed' });
 	assert.equal(update.isError, true);
 	assert.match(update.text, /Triage actions need the Shotef plugin/);
+
+	const note = await writer.call('add_ticket_note', { tid: T().symlink.tid, body: 'x' });
+	assert.equal(note.isError, true);
+	assert.match(note.text, /Triage actions need the Shotef plugin/);
 });

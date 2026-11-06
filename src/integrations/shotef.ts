@@ -405,8 +405,9 @@ const SHOTEF_ADVICE: [key: string, english: string, advice: string][] = [
 		'Use a column key from get_triage_board (default schema: todo, in_work, waiting, responded, closed, ' +
 			'blocked, deferred, feature).'],
 	['err-must-solve-first', 'Mark this question as solved before closing it',
-		'This is an unsolved Q&A question, so it cannot be closed as resolved: accept an answer with ' +
-			'mark_solved first, or close it with close_reason "no_response".'],
+		'This is an unsolved Q&A question, so it cannot be closed as resolved: accept an answer first ' +
+			'(mark_solved — it changes the public thread, so it needs NODEBB_ENABLE_WRITES), or close it with ' +
+			'close_reason "no_response".'],
 	['err-conflict', 'This item changed since you loaded it',
 		'Someone else moved this ticket in the meantime; re-read it with get_ticket and retry.'],
 	['err-bad-priority', 'Invalid priority', 'Priority must be one of: low, normal, high, urgent.'],

@@ -60,8 +60,19 @@ export interface Capabilities {
 	search: Capability;
 	qna: Capability;
 	shotef: Capability;
-	/** Whether this server will perform writes (NODEBB_ENABLE_WRITES + an identity). */
+	/**
+	 * Public writes — posts, replies, edits, votes, accepting an answer: anything
+	 * that changes what the forum's readers see. Needs NODEBB_ENABLE_WRITES and an
+	 * identity.
+	 */
 	writes: Capability;
+	/**
+	 * Shotef team workflow — internal notes, status, assignment, priority, passing.
+	 * Not gated by NODEBB_ENABLE_WRITES: it is the team's own working state, and
+	 * Shotef authorizes every action against team membership. Needs Shotef and an
+	 * identity.
+	 */
+	triage: Capability;
 	probedAt: number;
 }
 
@@ -134,6 +145,7 @@ export class CapabilityRegistry {
 				qna: unknown,
 				shotef: unknown,
 				writes: this.writesCapability(forum),
+				triage: unknown,
 				probedAt: Date.now(),
 			};
 			this.cached = result;
@@ -152,6 +164,7 @@ export class CapabilityRegistry {
 			qna,
 			shotef,
 			writes: this.writesCapability(forum),
+			triage: this.triageCapability(forum, shotef),
 			probedAt: Date.now(),
 		};
 		this.cached = result;
@@ -162,7 +175,7 @@ export class CapabilityRegistry {
 		if (!this.config.enableWrites) {
 			return {
 				state: 'absent',
-				reason: 'Read-only mode. Set NODEBB_ENABLE_WRITES=1 to enable posting and triage actions.',
+				reason: 'Public writes are off. Set NODEBB_ENABLE_WRITES=1 to post, reply, edit, vote and accept answers.',
 			};
 		}
 		if (!forum.reachable) return { state: 'unknown', reason: 'Forum unreachable.' };
@@ -171,6 +184,20 @@ export class CapabilityRegistry {
 				state: 'forbidden',
 				reason: forum.authProblem ??
 					'Writes need an identity: set NODEBB_API_TOKEN (and NODEBB_UID for a master token).',
+			};
+		}
+		return AVAILABLE;
+	}
+
+	private triageCapability(forum: ForumInfo, shotef: Capability): Capability {
+		if (!isUsable(shotef)) {
+			return { state: shotef.state, reason: `Triage actions need the Shotef plugin. ${shotef.reason ?? ''}`.trim() };
+		}
+		if (!forum.authenticated) {
+			return {
+				state: 'forbidden',
+				reason: forum.authProblem ??
+					'Triage actions need a team member\'s identity: set NODEBB_API_TOKEN (and NODEBB_UID for a master token).',
 			};
 		}
 		return AVAILABLE;

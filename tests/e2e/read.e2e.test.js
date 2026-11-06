@@ -31,7 +31,9 @@ test('forum_capabilities: every plugin live, identity verified by the forum', op
 	assert.match(text, /Full-text search \| ✅ available/);
 	assert.match(text, /Q&A \(accepted answers\) \| ✅ available/);
 	assert.match(text, /Shotef \(triage board\) \| ✅ available \| — \|/);
-	assert.match(text, /Writes \(post, vote, triage\) \| ⚠️ absent \| Read-only mode/);
+	// Triage is the team's workflow and needs no writes flag; public writes do.
+	assert.match(text, /Triage actions \(notes, status, assign, priority, pass\) \| ✅ available/);
+	assert.match(text, /Public writes \(post, reply, edit, vote, accept answer\) \| ⚠️ absent \| Public writes are off/);
 });
 
 test('startup log names the verified identity', opts, async () => {
@@ -209,7 +211,7 @@ test('get_triage_board: the real board, by column, with the parked backlog', opt
 	assert.match(text, new RegExp(`#${T().images.tid} Can't see uploaded images`));
 	assert.match(text, /## Responded `responded`/);
 	assert.ok(!text.includes(`#${T().redis.tid} Redis`), 'closed tickets hidden by default');
-	assert.match(text, /Status keys for update_ticket: `todo`, `in_work`, `waiting`, `responded`, `closed`, `blocked`/);
+	assert.match(text, /Status keys for set_ticket_status: `todo`, `in_work`, `waiting`, `responded`, `closed`, `blocked`/);
 });
 
 test('get_triage_board: a non-member and a guest get an explanation, not an error', opts, async () => {

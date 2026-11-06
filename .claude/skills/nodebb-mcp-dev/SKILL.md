@@ -5,8 +5,9 @@ description: >-
   reads, answers from, posts to, and works triage tickets on a NodeBB forum — or
   any other client of NodeBB's HTTP APIs. Use when adding or changing a tool,
   touching capability probing (search / Q&A / Shotef), API-token identity
-  (master tokens, _uid, tokens NodeBB silently downgrades to guest), the write
-  tools and NODEBB_ENABLE_WRITES, the fake forum in tests/fake-forum.js, or the
+  (master tokens, _uid, tokens NodeBB silently downgrades to guest), the public
+  write tools and NODEBB_ENABLE_WRITES, the Shotef ticket-working tools, the fake
+  forum in tests/fake-forum.js, or the
   end-to-end suite against a real forum (e2e/forum.sh, e2e/seed.mjs,
   tests/e2e). Also for what NodeBB v4 really returns: raw titles, the Q&A
   duplicate answer, stale plugin fields, dbsearch duplicates, the Shotef board.
@@ -16,7 +17,8 @@ description: >-
 
 An MCP server over a NodeBB forum: read tools (search, topics, posts,
 listings), answer tools (`find_answers`, `investigate_issue`), triage tools
-(Shotef), and opt-in write tools. Two optional plugins sharpen it —
+and ticket-working tools (Shotef), and opt-in public write tools. Two optional
+plugins sharpen it —
 `nodebb-plugin-question-and-answer` and Shotef — and full-text search needs a
 search plugin (NodeBB v4 activates `nodebb-plugin-dbsearch` by default).
 Everything degrades, and says so, when one is missing.
@@ -71,14 +73,27 @@ forum is reachable, so `npm test` stays green anywhere.
    `explainShotefError` for Shotef calls. Shotef errors arrive *translated*
    ("You are not a member of this team"), so match English text, not just keys.
 6. **Read tools** get `annotations: { readOnlyHint: true, openWorldHint: true }`;
-   the tools test asserts every default-advertised tool is read-only.
-7. **Write tools** go in `src/tools/write-tools.ts`, which is registered only
-   when `NODEBB_ENABLE_WRITES` is on. Start with `writeBlocker(caps)` (or
-   `triageBlocker`) so a guest or a silently-downgraded token is refused
-   *before* anything is sent. Report each sub-step; re-read state after a write
-   and show it. Triage actions go through Shotef's HTTP routes
-   (`applyTicketAction`), never sockets — sockets can't take API tokens.
-8. Add the fake-forum behaviour the tool needs (observed first), a unit test, and
+   the tools test asserts every default-advertised tool is read-only except the
+   named set of Shotef ticket actions.
+7. **Decide which side of the line a changing tool is on.**
+   - Changes what the *public* sees (posts, replies, edits, votes, the accepted
+     answer)? → `src/tools/write-tools.ts`, registered only with
+     `NODEBB_ENABLE_WRITES`; start with `writeBlocker(caps)`.
+   - Changes the *team's* Shotef state (notes, status, owner, priority, pass)?
+     → `src/tools/triage-actions.ts`, always registered; start with
+     `triageBlocker(caps)` (needs Shotef + a verified identity — Shotef itself
+     authorizes membership). These go through Shotef's HTTP routes
+     (`applyTicketAction`), never sockets — sockets can't take API tokens.
+   Either way a guest or silently-downgraded token is refused *before* anything
+   is sent, and the tool re-reads state afterwards and shows it.
+8. **One action per tool.** Annotations (`readOnlyHint`, `destructiveHint`,
+   `idempotentHint`) must hold for *every* input — a bundled tool can't be
+   honest (a note is not idempotent; a status move is), clients approve per
+   tool, and models find `add_ticket_note` by name, not inside another tool's
+   parameters. Group only fields of the same kind of change
+   (`set_ticket_priority` = priority + help-wanted). Never keep an overlapping
+   bundled tool alongside the scoped ones.
+9. Add the fake-forum behaviour the tool needs (observed first), a unit test, and
    an e2e assertion. Then `npm run check && npm run e2e`.
 
 ## Identity: verify, never assume
@@ -95,13 +110,14 @@ API (`/api/v3/ping`) explains — `CapabilityRegistry.explainAuthFailure` asks i
 ```
 src/index.ts            stdio entry; logs to stderr only (stdout is the protocol)
 src/server.ts           McpServer + instructions
-src/config.ts           env → Config (NODEBB_URL required; NODEBB_ENABLE_WRITES opt-in)
+src/config.ts           env → Config (NODEBB_URL required; NODEBB_ENABLE_WRITES opt-in, public writes only)
 src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid
-src/capabilities.ts     probes + verified identity + writes capability, TTL-cached
+src/capabilities.ts     probes + verified identity + writes/triage capabilities, TTL-cached
 src/nodebb/forum.ts     topics/posts/search/listings/core writes, normalized
 src/integrations/       qna.ts (answers, unsolved), shotef.ts (status, board, tickets, actions)
 src/research.ts         candidate gathering (search or scan), answer resolution, investigation
-src/tools/              forum-, answer-, triage-, write-tools + format.ts
+src/tools/              forum-, answer-, triage- (reads), triage-actions (Shotef workflow),
+                        write-tools (public, flag-gated) + format.ts
 tests/fake-forum.js     NodeBB v4.16 model over real HTTP (stateful writes)
 tests/e2e/              harness + read / write / core suites against a real forum
 e2e/                    forum.sh, seed.mjs, mint-tokens.cjs, run.sh

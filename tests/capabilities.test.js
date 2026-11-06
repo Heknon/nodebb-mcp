@@ -184,3 +184,22 @@ test('writes are off unless enabled, and need a real identity when they are', as
 test('NODEBB_ENABLE_WRITES rejects values that are not booleans', () => {
 	assert.throws(() => loadConfig({ NODEBB_URL: 'http://x', NODEBB_ENABLE_WRITES: 'maybe' }), /NODEBB_ENABLE_WRITES/);
 });
+
+test('triage actions need Shotef and an identity, but not NODEBB_ENABLE_WRITES', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+
+	const member = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(member.writes.state, 'absent', 'public writes stay off without the flag');
+	assert.equal(member.triage.state, 'available', 'team workflow does not need it');
+
+	const guest = await registryFor(forum.url).registry.get();
+	assert.equal(guest.triage.state, 'forbidden');
+	assert.match(guest.triage.reason, /team member's identity/);
+
+	const bare = await startFakeForum({ plugins: { shotef: false } });
+	t.after(() => bare.close());
+	const noShotef = await registryFor(bare.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
+	assert.equal(noShotef.triage.state, 'absent');
+	assert.match(noShotef.triage.reason, /Triage actions need the Shotef plugin/);
+});

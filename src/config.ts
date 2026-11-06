@@ -27,8 +27,10 @@ export interface Config {
 	/** Max posts pulled per topic read. */
 	maxPostsPerTopic: number;
 	/**
-	 * Register the write tools (posting, voting, triage actions). Off by default:
-	 * anything written is immediately visible to the forum's users.
+	 * Register the public write tools (posting, replying, editing, voting,
+	 * accepting an answer). Off by default: anything they write is immediately
+	 * visible to the forum's users. Shotef's team-internal triage actions are not
+	 * behind this flag — Shotef authorizes those itself.
 	 */
 	enableWrites: boolean;
 }

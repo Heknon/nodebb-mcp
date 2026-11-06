@@ -61,7 +61,8 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					row('Full-text search', caps.search),
 					row('Q&A (accepted answers)', caps.qna),
 					row('Shotef (triage board)', caps.shotef),
-					row('Writes (post, vote, triage)', caps.writes),
+					row('Triage actions (notes, status, assign, priority, pass)', caps.triage),
+					row('Public writes (post, reply, edit, vote, accept answer)', caps.writes),
 					'',
 					`_Probed ${formatDate(caps.probedAt)}; cached for ${Math.round(ctx.config.capabilityTtlMs / 1000)}s._`,
 				);

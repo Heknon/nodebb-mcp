@@ -30,7 +30,7 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | `e2e/seed.mjs` | The fixture, through the live Write API as each user (master token + `_uid`), so plugin hooks fire. Writes `e2e/.fixture.json` (gitignored): ids, uids, cids, tokens. Reuses an intact fixture; `--fresh` purges categories + team and rebuilds. |
 | `tests/e2e/harness.js` | `e2e({ needs })` → `{ fixture, opts }` (skip reason when the forum is absent or in the wrong plugin state, asked of the forum itself); `spawnMcp(fixture, { as, env })`; `eventually()`; `grabId()`. |
 | `tests/e2e/read.e2e.test.js` | Read tools as admin / team member / outsider / guest / bogus token / master ± `NODEBB_UID`. |
-| `tests/e2e/write.e2e.test.js` | One ticket's whole life, reporter and team member as separate processes. Per-run marker in titles so reruns never collide. |
+| `tests/e2e/write.e2e.test.js` | One ticket's whole life: the reporter, the team member *without* the writes flag (all ticket work), and the same member *with* it (public reply, accepting the answer), as separate processes. Per-run marker in titles so reruns never collide. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture
@@ -58,7 +58,8 @@ import { e2e, spawnMcp } from './harness.js';
 const { fixture: fx, opts } = await e2e({ needs: 'full' });   // or 'core'
 
 test('…', opts, async () => {
-  const mcp = await spawnMcp(fx, { as: 'maintainer', env: { NODEBB_ENABLE_WRITES: '1' } });
+  // Ticket actions need only a team member; add env: { NODEBB_ENABLE_WRITES: '1' } for public writes.
+  const mcp = await spawnMcp(fx, { as: 'maintainer' });
   try {
     const { text, isError } = await mcp.call('get_ticket', { tid: fx.topics.symlink.tid });
     assert.match(text, /…/);

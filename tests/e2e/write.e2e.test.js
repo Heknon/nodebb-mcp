@@ -1,22 +1,29 @@
 /**
- * e2e: the write tools against the real forum — one support ticket worked
- * through its whole life by two real identities, each its own MCP process:
+ * e2e: one support ticket worked through its whole life on the real forum, by
+ * real identities, each its own MCP process:
  *
- *   reporter (e2e_outsider, not on the team)      team member (e2e_maintainer)
- *   ───────────────────────────────────────      ─────────────────────────────
- *   create_topic as a question  → board: Todo
- *                                                 update_ticket: claim, priority,
- *                                                   internal note, → in_work
- *                                                 reply_to_topic → ball to reporter
- *   vote_post on the answer
- *   reply_to_topic              → ball to team
- *                                                 close → refused (unsolved question)
- *                                                 mark_solved → close → resolved
+ *   reporter (e2e_outsider,         team (e2e_maintainer,          team, public writes
+ *   public writes on)               NO NODEBB_ENABLE_WRITES)       (same user, flag on)
+ *   ─────────────────────           ─────────────────────────      ────────────────────
+ *   create_topic (question)
+ *     → board: Todo
+ *                                   assign_ticket me, set_ticket_
+ *                                   priority, add_ticket_note,
+ *                                   set_ticket_status in_work
+ *                                                                  reply_to_topic
+ *                                                                    → ball to reporter
+ *   vote_post, reply_to_topic
+ *     → ball to team
+ *                                   set_ticket_status closed
+ *                                     → refused (unsolved)
+ *                                                                  mark_solved
+ *                                   set_ticket_status closed → resolved
  *   find_answers now returns the accepted answer, via dbsearch's live index.
  *
- * Every step goes through Shotef's and NodeBB's own hooks (ball-in-court
- * routing, the Q&A close gate, search indexing) — nothing is stubbed.
- * Topics carry a per-run marker so repeated runs never collide.
+ * The middle column is the point of the split: Shotef's team workflow needs a
+ * team member's identity, not the public-writes flag. Every step runs through
+ * Shotef's and NodeBB's own hooks (ball-in-court routing, the Q&A close gate,
+ * search indexing). Topics carry a per-run marker so repeated runs never collide.
  */
 
 import test from 'node:test';
@@ -30,32 +37,40 @@ const RUN = `r${Date.now().toString(36)}`;
 const MARKER = `quokkaflux${RUN}`; // a word no other topic contains, for search
 
 const WRITES = { NODEBB_ENABLE_WRITES: '1' };
+const TRIAGE_ACTIONS = ['add_ticket_note', 'assign_ticket', 'pass_ticket', 'set_ticket_priority', 'set_ticket_status'];
+const PUBLIC_WRITES = ['create_topic', 'edit_post', 'mark_solved', 'reply_to_topic', 'vote_post'];
+
 let reporter;
-let member;
+let team;
+let teamPublic;
 let reader;
 const state = {};
 
 test.before(async () => {
 	if (opts.skip) return;
-	[reporter, member, reader] = await Promise.all([
+	[reporter, team, teamPublic, reader] = await Promise.all([
 		spawnMcp(fx, { as: 'outsider', env: WRITES }),
+		spawnMcp(fx, { as: 'maintainer' }),
 		spawnMcp(fx, { as: 'maintainer', env: WRITES }),
 		spawnMcp(fx, { as: 'admin' }),
 	]);
 });
 test.after(async () => {
-	await Promise.all([reporter, member, reader].filter(Boolean).map(server => server.close()));
+	await Promise.all([reporter, team, teamPublic, reader].filter(Boolean).map(server => server.close()));
 });
 
-test('read-only servers do not advertise write tools; writable ones do', opts, async () => {
-	const readOnly = (await reader.client.listTools()).tools.map(tool => tool.name);
-	assert.ok(!readOnly.includes('reply_to_topic'));
-	const writable = (await member.client.listTools()).tools.map(tool => tool.name);
-	for (const name of ['create_topic', 'reply_to_topic', 'edit_post', 'vote_post', 'update_ticket', 'mark_solved', 'pass_ticket']) {
-		assert.ok(writable.includes(name), `${name} missing`);
-	}
-	const caps = await member.call('forum_capabilities');
-	assert.match(caps.text, /Writes \(post, vote, triage\) \| ✅ available/);
+test('triage actions need no writes flag; public writes do', opts, async () => {
+	const withoutFlag = (await team.client.listTools()).tools.map(tool => tool.name);
+	for (const name of TRIAGE_ACTIONS) assert.ok(withoutFlag.includes(name), `${name} missing without the flag`);
+	for (const name of PUBLIC_WRITES) assert.ok(!withoutFlag.includes(name), `${name} leaked without the flag`);
+	assert.ok(!withoutFlag.includes('update_ticket'));
+
+	const withFlag = (await teamPublic.client.listTools()).tools.map(tool => tool.name);
+	for (const name of [...TRIAGE_ACTIONS, ...PUBLIC_WRITES]) assert.ok(withFlag.includes(name), `${name} missing`);
+
+	const caps = await team.call('forum_capabilities');
+	assert.match(caps.text, /Triage actions \(notes, status, assign, priority, pass\) \| ✅ available/);
+	assert.match(caps.text, /Public writes \(post, reply, edit, vote, accept answer\) \| ⚠️ absent/);
 });
 
 test('reporter: create_topic posts a question that lands on the board as Todo', opts, async () => {
@@ -73,32 +88,41 @@ test('reporter: create_topic posts a question that lands on the board as Todo', 
 	assert.match(text, /Tracked on a triage board — Triage: Received — not picked up yet · handled by Support & Ops/);
 	state.tid = grabId(text, /#(\d+) Webhook deliveries/);
 
-	const board = await member.call('get_triage_board', { team: fx.teamId });
+	const board = await team.call('get_triage_board', { team: fx.teamId });
 	assert.match(board.text, new RegExp(`## Todo \`todo\` \\(\\d+\\)[\\s\\S]*#${state.tid} Webhook deliveries retry forever`));
 });
 
-test('reporter: cannot work the ticket — not on the team', opts, async () => {
-	const { text, isError } = await reporter.call('update_ticket', { tid: state.tid, owner: 'me' });
-	assert.equal(isError, true);
-	assert.match(text, /❌ claim — You are not a member of this team/);
-	assert.match(text, /not on the team handling this ticket/);
+test('reporter: cannot work the ticket — Shotef refuses a non-member', opts, async () => {
+	const claim = await reporter.call('assign_ticket', { tid: state.tid, owner: 'me' });
+	assert.equal(claim.isError, true);
+	assert.match(claim.text, /You are not a member of this team/);
+	assert.match(claim.text, /not on the team handling this ticket/);
+
+	const note = await reporter.call('add_ticket_note', { tid: state.tid, body: 'let me in' });
+	assert.equal(note.isError, true);
+	assert.match(note.text, /You are not a member of this team/);
 });
 
-test('member: claim, prioritise, note and start work in one call', opts, async () => {
-	const { text, isError } = await member.call('update_ticket', {
-		tid: state.tid,
-		owner: 'me',
-		priority: 'high',
-		note: `Suspect the retry worker ignores 2xx. (${RUN})`,
-		status: 'in_work',
-	});
-	assert.equal(isError, false, text);
-	assert.match(text, /- ✅ claim\n- ✅ priority → high\n- ✅ internal note\n- ✅ status → in_work/);
-	assert.match(text, /\*\*Now:\*\* `in_work` \(In progress\) · owner: e2e_maintainer · priority: high/);
+test('team (no writes flag): claim, prioritise, note, and start work', opts, async () => {
+	const claimed = await team.call('assign_ticket', { tid: state.tid, owner: 'me' });
+	assert.equal(claimed.isError, false, claimed.text);
+	assert.match(claimed.text, /Claimed ticket #\d+ as e2e_maintainer/);
 
-	const ticket = await member.call('get_ticket', { tid: state.tid });
+	const priority = await team.call('set_ticket_priority', { tid: state.tid, priority: 'high' });
+	assert.equal(priority.isError, false, priority.text);
+	assert.match(priority.text, /- ✅ priority → high/);
+
+	const note = await team.call('add_ticket_note', { tid: state.tid, body: `Suspect the retry worker ignores 2xx. (${RUN})` });
+	assert.equal(note.isError, false, note.text);
+	assert.match(note.text, /visible to the team only/);
+
+	const moved = await team.call('set_ticket_status', { tid: state.tid, status: 'in_work', reason: `picked up (${RUN})` });
+	assert.equal(moved.isError, false, moved.text);
+	assert.match(moved.text, /\*\*Now:\*\* `in_work` \(In progress\) · owner: e2e_maintainer · priority: high/);
+
+	const ticket = await team.call('get_ticket', { tid: state.tid });
 	assert.match(ticket.text, new RegExp(`e2e_maintainer: Suspect the retry worker ignores 2xx\\. \\(${RUN}\\)`));
-	assert.match(ticket.text, /status_change: todo → in_work/);
+	assert.match(ticket.text, new RegExp(`status_change: todo → in_work — picked up \\(${RUN}\\)`));
 	assert.match(ticket.text, /claim: — → e2e_maintainer/);
 
 	// The note is internal: the reporter's view of the topic never shows it.
@@ -106,13 +130,14 @@ test('member: claim, prioritise, note and start work in one call', opts, async (
 	assert.ok(!publicView.text.includes('Suspect the retry worker'), publicView.text);
 });
 
-test('member: reassigning to someone else needs a manager', opts, async () => {
-	const { text } = await member.call('update_ticket', { tid: state.tid, owner: fx.uids.admin });
-	assert.match(text, /❌ assign to uid 1 — Only a team manager can do that/);
+test('team: reassigning to someone else needs a manager', opts, async () => {
+	const { text, isError } = await team.call('assign_ticket', { tid: state.tid, owner: fx.uids.admin });
+	assert.equal(isError, true);
+	assert.match(text, /Only a team manager can do that/);
 });
 
-test('member: a public reply hands the ball to the reporter', opts, async () => {
-	const { text, isError } = await member.call('reply_to_topic', {
+test('team (writes on): a public reply hands the ball to the reporter', opts, async () => {
+	const { text, isError } = await teamPublic.call('reply_to_topic', {
 		tid: state.tid,
 		content: 'The retry worker treated any non-JSON body as a failure. Set `webhooks:strictJson` to false, then restart.',
 	});
@@ -121,7 +146,7 @@ test('member: a public reply hands the ball to the reporter', opts, async () => 
 	assert.match(text, /Ticket moved — Triage: Answered — waiting on the reporter/);
 });
 
-test('reporter: upvote the answer; it cannot upvote its own post', opts, async () => {
+test('reporter: upvote the answer', opts, async () => {
 	const up = await reporter.call('vote_post', { pid: state.answerPid, vote: 'up' });
 	assert.equal(up.isError, false, up.text);
 	assert.match(up.text, /Upvoted post \d+ as e2e_outsider — score now 1/);
@@ -133,19 +158,19 @@ test('reporter: replying hands the ball back to the team', opts, async () => {
 	assert.match(text, /Ticket moved — Triage: In progress/);
 });
 
-test('member: an unsolved question cannot be closed as resolved — the forum says what to do', opts, async () => {
-	const { text, isError } = await member.call('update_ticket', { tid: state.tid, status: 'closed' });
+test('team: an unsolved question cannot be closed as resolved — the forum says what to do', opts, async () => {
+	const { text, isError } = await team.call('set_ticket_status', { tid: state.tid, status: 'closed' });
 	assert.equal(isError, true);
-	assert.match(text, /❌ status → closed — Mark this question as solved before closing it/);
-	assert.match(text, /mark_solved/);
+	assert.match(text, /Mark this question as solved before closing it/);
+	assert.match(text, /mark_solved — it changes the public thread, so it needs NODEBB_ENABLE_WRITES/);
 });
 
-test('member: accept the answer, then close as resolved', opts, async () => {
-	const solved = await member.call('mark_solved', { tid: state.tid, pid: state.answerPid });
+test('team: accept the answer (public write), then close as resolved (triage)', opts, async () => {
+	const solved = await teamPublic.call('mark_solved', { tid: state.tid, pid: state.answerPid });
 	assert.equal(solved.isError, false, solved.text);
 	assert.match(solved.text, new RegExp(`accepting post ${state.answerPid} as the answer`));
 
-	const closed = await member.call('update_ticket', { tid: state.tid, status: 'closed', close_reason: 'resolved' });
+	const closed = await team.call('set_ticket_status', { tid: state.tid, status: 'closed', close_reason: 'resolved' });
 	assert.equal(closed.isError, false, closed.text);
 	assert.match(closed.text, /\*\*Now:\*\* `closed` \(Closed\) · closed: resolved/);
 
@@ -188,20 +213,26 @@ test('reporter: edit its own opening post', opts, async () => {
 });
 
 test('pass_ticket refusals carry advice', opts, async () => {
-	const self = await member.call('pass_ticket', { tid: state.tid, to_team: fx.teamId, reason: 'test' });
+	const self = await team.call('pass_ticket', { tid: state.tid, to_team: fx.teamId, reason: 'test' });
 	assert.equal(self.isError, true);
 	assert.match(self.text, /already handled by/);
 });
 
-test('a guest server with writes enabled refuses before sending anything', opts, async () => {
+test('a guest server refuses public writes and triage actions before sending anything', opts, async () => {
 	const guest = await spawnMcp(fx, { as: 'anon', env: WRITES });
 	try {
-		const { text, isError } = await guest.call('reply_to_topic', { tid: state.tid, content: 'drive-by' });
-		assert.equal(isError, true);
-		assert.match(text, /Writes are not possible right now/);
+		const reply = await guest.call('reply_to_topic', { tid: state.tid, content: 'drive-by' });
+		assert.equal(reply.isError, true);
+		assert.match(reply.text, /Public writes are not possible right now/);
+
+		const note = await guest.call('add_ticket_note', { tid: state.tid, body: 'drive-by note' });
+		assert.equal(note.isError, true);
+		assert.match(note.text, /Triage actions are not possible right now/);
 	} finally {
 		await guest.close();
 	}
 	const topic = await reader.call('get_topic', { tid: state.tid });
 	assert.ok(!topic.text.includes('drive-by'));
+	const ticket = await team.call('get_ticket', { tid: state.tid });
+	assert.ok(!ticket.text.includes('drive-by note'));
 });

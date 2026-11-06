@@ -68,9 +68,8 @@ export function registerPrompts(server: McpServer, config: Config): void {
 		}),
 	);
 
-	// Acting on a ticket only makes sense when the write tools exist.
-	if (!config.enableWrites) return;
-
+	// Triage actions are always available; the public steps depend on the writes flag.
+	const publicWrites = config.enableWrites;
 	server.registerPrompt(
 		'work_ticket',
 		{
@@ -90,15 +89,21 @@ export function registerPrompts(server: McpServer, config: Config): void {
 							`Work support ticket #${tid} to resolution.\n\n` +
 							'1. get_ticket and get_topic — what is reported, what the team already tried (internal notes), ' +
 							'who owns it.\n' +
-							'2. update_ticket with owner "me" and status in_work if nobody has it; leave an internal note ' +
-							'with your plan.\n' +
+							'2. If nobody owns it: assign_ticket with owner "me", then set_ticket_status in_work. ' +
+							'Record your plan with add_ticket_note.\n' +
 							'3. find_answers / investigate_issue for an existing fix. Cite the topics you rely on, and say ' +
 							'whether each answer was accepted or merely upvoted.\n' +
-							'4. reply_to_topic with the answer — public, so plain and self-contained; keep team-only ' +
-							'reasoning in update_ticket notes.\n' +
-							'5. When the reporter confirms it worked: mark_solved with the answering post, then ' +
-							'update_ticket status closed. If they went silent, close with close_reason no_response ' +
-							'(a reply reopens it). If it belongs to another team, pass_ticket with the reason.\n\n' +
+							(publicWrites
+								? '4. reply_to_topic with the answer — public, so plain and self-contained; keep team-only ' +
+									'reasoning in add_ticket_note.\n' +
+									'5. When the reporter confirms it worked: mark_solved with the answering post, then ' +
+									'set_ticket_status closed. '
+								: '4. Public writes are disabled on this server, so draft the public reply for a person to ' +
+									'post, and save the draft with add_ticket_note so the team can find it.\n' +
+									'5. When the reporter confirms it worked and someone has accepted the answer on the forum, ' +
+									'set_ticket_status closed. ') +
+							'If they went silent, close with close_reason no_response (a reply reopens it). If it belongs ' +
+							'to another team, pass_ticket with the reason.\n\n' +
 							'Stop and report back instead of guessing when the forum refuses an action — the refusal ' +
 							'says why.',
 					},

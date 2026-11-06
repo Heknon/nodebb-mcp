@@ -111,7 +111,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 				'The team\'s triage board: every ticket by workflow column (active lanes, the parked ' +
 				'backlog, and the intake of shared tickets nobody has taken), with priority, owner and age. ' +
 				'Use it to see the current support workload, to find stalled issues, or to look up the ' +
-				'status keys update_ticket accepts. Requires the Shotef plugin and a token belonging to a ' +
+				'status keys set_ticket_status accepts. Requires the Shotef plugin and a token belonging to a ' +
 				'team member — a non-member gets an explanation rather than an error.',
 			inputSchema: {
 				team: z
@@ -183,7 +183,7 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 				const closedCount = board.items.length - visible.length;
 				if (closedCount) lines.push(`_${closedCount} closed ticket(s) hidden; pass include_closed to list them._`, '');
 				lines.push(
-					`_Status keys for update_ticket: ${board.columns.map(column => `\`${column.key}\``).join(', ')}._`,
+					`_Status keys for set_ticket_status: ${board.columns.map(column => `\`${column.key}\``).join(', ')}._`,
 				);
 				return text(lines.join('\n').trim());
 			} catch (err) {
