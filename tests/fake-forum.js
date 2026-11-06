@@ -156,6 +156,7 @@ function seedTickets() {
  * @param {boolean} [opts.escapeTitles] emulate a forum that sends titles HTML-escaped
  * @param {boolean} [opts.shotefIgnoresTokens] emulate Shotef < the setupApiRoute fix
  * @param {boolean} [opts.loginWithoutSession] password accepted but no session granted (e.g. 2FA pending)
+ * @param {number} [opts.loginDelayMs] hold each login response this long (to test requests racing a sign-in)
  */
 export async function startFakeForum(opts = {}) {
 	const plugins = { search: true, qna: true, shotef: true, ...(opts.plugins ?? {}) };
@@ -167,6 +168,8 @@ export async function startFakeForum(opts = {}) {
 	let nextPid = 500;
 	/** sid -> { uid, csrf } */
 	const sessions = new Map();
+	/** One-off responses a proxy gives instead of the forum: { path, method?, status, contentType, text } */
+	const intercepts = [];
 	/** Every counted login attempt, in order: { username, ok } */
 	const loginAttempts = [];
 	/** The User-Agent of each successful login: NodeBB labels the session with it. */
@@ -293,6 +296,15 @@ export async function startFakeForum(opts = {}) {
 			res.end('<html>404</html>');
 		};
 
+		// --- a proxy in front of the forum answering for it (forum.interceptNext) --
+		const intercept = intercepts.findIndex(entry => path.startsWith(entry.path) && (!entry.method || entry.method === method));
+		if (intercept >= 0) {
+			const [{ status, contentType, text }] = intercepts.splice(intercept, 1);
+			res.writeHead(status, { 'content-type': contentType });
+			res.end(text);
+			return;
+		}
+
 		// --- authentication, as middleware/user.js does it ---------------------
 		const header = req.headers.authorization ?? '';
 		const token = header.startsWith('Bearer ') ? header.slice(7) : undefined;
@@ -349,6 +361,7 @@ export async function startFakeForum(opts = {}) {
 		}
 
 		if (path === '/api/v3/utilities/login' && method === 'POST') {
+			if (opts.loginDelayMs) await new Promise(r => setTimeout(r, opts.loginDelayMs));
 			const html = (status, text) => {
 				res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
 				res.end(text);
@@ -722,6 +735,11 @@ export async function startFakeForum(opts = {}) {
 		/** Signed-in sessions, by uid (for asserting sign-out). */
 		sessionsFor(uid) { return [...sessions.values()].filter(entry => entry.uid === uid).length; },
 		lockAccount(uid) { locked.add(uid); },
+		unlockAccount(uid) { locked.delete(uid); failures[uid] = 0; },
+		/** The next request to a path prefix gets this response instead of the forum's (a proxy, a WAF, maintenance). */
+		interceptNext(path, status, { method, contentType = 'text/plain', text = '' } = {}) {
+			intercepts.push({ path, method, status, contentType, text });
+		},
 		async close() {
 			await new Promise((resolve) => server.close(resolve));
 		},

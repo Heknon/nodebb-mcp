@@ -240,6 +240,27 @@ export async function getBoard(
 
 	const teams: Raw[] = Array.isArray(raw.teams) ? raw.teams : [];
 	const team = (raw.team && typeof raw.team === 'object' ? raw.team : { id: raw.team }) as Raw;
+	const visible = teams.map(entry => ({
+		id: String(entry.id),
+		name: decodeTitle(entry.name, String(entry.id)),
+		selected: Boolean(entry.selected),
+	}));
+
+	// Shotef answers an unknown or hidden team with the viewer's default team's
+	// board, silently. Never pass that off as the team asked for.
+	if (teamId && team.id !== undefined && String(team.id) !== teamId) {
+		const byName = visible.find(entry => entry.name.toLowerCase() === teamId.trim().toLowerCase());
+		if (byName && byName.id !== teamId) return getBoard(client, config, capabilities, byName.id);
+		const who = capabilities.forum.username ?? (capabilities.forum.uid ? `uid ${capabilities.forum.uid}` : 'a guest');
+		return {
+			...empty,
+			available: true,
+			teams: visible,
+			reason: `No triage team "${teamId}" is visible to ${who}. ` +
+				`Teams they can see: ${visible.map(entry => `${entry.name} (\`${entry.id}\`)`).join(', ') || 'none'}.`,
+		};
+	}
+
 	const columns: BoardColumn[] = [];
 	const items: BoardCard[] = [];
 
@@ -265,11 +286,7 @@ export async function getBoard(
 		available: true,
 		teamId: team.id ? String(team.id) : teamId,
 		teamName: team.name ? decodeTitle(team.name) : undefined,
-		teams: teams.map(entry => ({
-			id: String(entry.id),
-			name: decodeTitle(entry.name, String(entry.id)),
-			selected: Boolean(entry.selected),
-		})),
+		teams: visible,
 		columns,
 		items,
 		onDuty: raw.shotef?.username ? decodeTitle(raw.shotef.username) : undefined,
@@ -504,29 +521,26 @@ export async function applyTicketAction(
 	tid: number,
 	action: TicketAction,
 ): Promise<Raw> {
-	const path = (rest: string) => `/api/v3${ticketPath(config, tid, rest)}`;
+	const path = (rest: string) => ticketPath(config, tid, rest);
 	switch (action.kind) {
 		case 'status':
-			return client.request(path('/status'), {
-				method: 'PUT',
-				body: { status: action.status, closeReason: action.closeReason, note: action.note },
-			});
+			return client.write('PUT', path('/status'), { status: action.status, closeReason: action.closeReason, note: action.note });
 		case 'claim':
-			return client.request(path('/claim'), { method: 'PUT', body: {} });
+			return client.write('PUT', path('/claim'), {});
 		case 'unclaim':
-			return client.request(path('/claim'), { method: 'DELETE', body: {} });
+			return client.write('DELETE', path('/claim'), {});
 		case 'assign':
-			return client.request(path('/assignee'), { method: 'PUT', body: { uid: action.uid } });
+			return client.write('PUT', path('/assignee'), { uid: action.uid });
 		case 'priority':
-			return client.request(path('/priority'), { method: 'PUT', body: { priority: action.priority } });
+			return client.write('PUT', path('/priority'), { priority: action.priority });
 		case 'help-wanted':
-			return client.request(path('/help-wanted'), { method: 'PUT', body: { on: action.on } });
+			return client.write('PUT', path('/help-wanted'), { on: action.on });
 		case 'note':
-			return client.request(path('/notes'), { method: 'POST', body: { body: action.body } });
+			return client.write('POST', path('/notes'), { body: action.body });
 		case 'solved':
-			return client.request(path('/solved'), { method: 'PUT', body: action.pid ? { pid: action.pid } : {} });
+			return client.write('PUT', path('/solved'), action.pid ? { pid: action.pid } : {});
 		case 'pass':
-			return client.request(path('/pass'), { method: 'POST', body: { toTeamId: action.toTeam, reason: action.reason } });
+			return client.write('POST', path('/pass'), { toTeamId: action.toTeam, reason: action.reason });
 	}
 }
 

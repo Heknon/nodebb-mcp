@@ -14,11 +14,11 @@
  */
 
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import type { OAuthClientInformationFull } from '@modelcontextprotocol/sdk/shared/auth.js';
 
+import { writePrivateJson } from '../files.js';
 import type { SessionState } from '../session.js';
 
 export const ACCESS_TOKEN_TTL_S = 60 * 60;
@@ -195,6 +195,7 @@ export class OAuthStore {
 	/* ----------------------------------------------------------- tokens */
 
 	issueTokens(grantId: string, clientId: string, scopes: string[], resource?: string): IssuedTokens {
+		this.sweep();
 		const access = secret();
 		const refresh = secret();
 		const expiresAt = Math.floor(this.now() / 1000) + ACCESS_TOKEN_TTL_S;
@@ -219,11 +220,14 @@ export class OAuthStore {
 		return grant ? { ...entry, grant } : undefined;
 	}
 
-	/** Refresh tokens rotate: taking one deletes it. */
-	takeRefresh(token: string): (StoredToken & { grant: Grant }) | undefined {
+	/**
+	 * Refresh tokens rotate: taking one deletes it — but only for the client it
+	 * was issued to, so another client presenting it cannot burn it.
+	 */
+	takeRefresh(token: string, clientId: string): (StoredToken & { grant: Grant }) | undefined {
 		const key = hash(token);
 		const entry = this.tokens.get(key);
-		if (!entry || entry.kind !== 'refresh') return undefined;
+		if (!entry || entry.kind !== 'refresh' || entry.clientId !== clientId) return undefined;
 		this.tokens.delete(key);
 		this.persist();
 		const grant = this.liveGrant(entry.grantId);
@@ -272,6 +276,10 @@ export class OAuthStore {
 		const now = this.now();
 		for (const [id, pending] of this.pending) if (pending.expiresAt < now) this.pending.delete(id);
 		for (const [code, entry] of this.codes) if (entry.expiresAt < now) this.codes.delete(code);
+		// Each refresh leaves the previous access token to run out; drop it once it has.
+		for (const [key, token] of this.tokens) {
+			if (token.kind === 'access' && (token.expiresAt ?? 0) * 1000 < now) this.tokens.delete(key);
+		}
 		// Ended grants keep no session; drop them after a day.
 		for (const [id, grant] of this.grants) {
 			if (grant.endedAt && now - grant.endedAt > 24 * 60 * 60 * 1000) this.grants.delete(id);
@@ -291,16 +299,8 @@ export class OAuthStore {
 			),
 			tokens: Object.fromEntries(this.tokens),
 		};
-		this.writing = this.writing.then(async () => {
-			try {
-				await mkdir(dirname(file), { recursive: true, mode: 0o700 });
-				const tmp = `${file}.${process.pid}.tmp`;
-				await writeFile(tmp, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
-				await rename(tmp, file);
-			} catch {
-				// State stays correct in memory; the next write retries.
-			}
-		});
+		// State stays correct in memory if a write fails; the next write retries.
+		this.writing = writePrivateJson(file, snapshot);
 	}
 
 	/** Wait for pending writes (tests, shutdown). */

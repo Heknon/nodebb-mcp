@@ -214,6 +214,15 @@ test('get_triage_board: the real board, by column, with the parked backlog', opt
 	assert.match(text, /Status keys for set_ticket_status: `todo`, `in_work`, `waiting`, `responded`, `closed`, `blocked`/);
 });
 
+test('get_triage_board: an unknown team is refused, not swapped for the default team; a team name works', opts, async () => {
+	// Real Shotef answers an unknown ?team= with the viewer's default board, silently.
+	const maintainer = await as('maintainer');
+	const wrong = await maintainer.call('get_triage_board', { team: 'no-such-team' });
+	assert.match(wrong.text, /No triage team "no-such-team" is visible to e2e_maintainer\. Teams they can see: Support & Ops \(`e2e-support`\)/);
+	const byName = await maintainer.call('get_triage_board', { team: 'support & ops' });
+	assert.match(byName.text, /# Triage board — Support & Ops \(e2e-support\)/);
+});
+
 test('get_triage_board: a non-member and a guest get an explanation, not an error', opts, async () => {
 	const outsider = await (await as('outsider')).call('get_triage_board');
 	assert.equal(outsider.isError, false);

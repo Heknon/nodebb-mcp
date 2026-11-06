@@ -32,10 +32,10 @@
  */
 
 import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 
 import { NodeBBError } from './errors.js';
+import { writePrivateJson } from './files.js';
 import { USER_AGENT } from './version.js';
 
 export interface PasswordSessionOptions {
@@ -132,7 +132,10 @@ export class PasswordSession {
 	private csrf: string | undefined;
 	private signingIn: Promise<void> | undefined;
 	private refusal: SignInError | undefined;
+	/** When a held refusal lapses and signing in may be tried again. */
+	private refusalUntil = 0;
 	private loaded = false;
+	private loading: Promise<void> | undefined;
 	/** Bumped on every successful sign-in, so a stale "session lost" signal can be ignored. */
 	private generation = 0;
 	/** The uid the forum confirmed for this session; 0 until then. */
@@ -224,31 +227,72 @@ export class PasswordSession {
 
 	/** Make sure a session is held, signing in if needed. Throws a remembered refusal. */
 	async ensure(): Promise<void> {
-		if (!this.loaded) await this.load();
-		if (this.refusal) throw this.refusal;
-		if (this.cookies.size && this.csrf) return;
+		if (!this.loaded) await (this.loading ??= this.load());
+		const refusal = this.heldRefusal();
+		if (refusal) throw refusal;
+		// A confirmed uid, not just a cookie: mid-sign-in (or after a failed one)
+		// the cookie is an anonymous session's, and requests on it are a guest's.
+		if (this.uid && this.cookies.size && this.csrf) return;
 		if (this.opts.password === undefined) throw this.ended();
 		await this.signIn();
 	}
 
+	/** The refusal still in force, if any; a lock or rejected password is held for an hour. */
+	private heldRefusal(): SignInError | undefined {
+		if (this.refusal && this.now() >= this.refusalUntil) this.refusal = undefined;
+		return this.refusal;
+	}
+
 	/** A password-less session the forum no longer honours: latched, reported once. */
 	private ended(): SignInError {
-		if (!this.refusal) {
+		if (this.refusal?.reason !== 'session-ended') {
 			this.refusal = new SignInError(
 				'session-ended',
 				`The forum session for "${this.opts.username}" has ended (it expired or was signed out).`,
 			);
+			this.refusalUntil = Number.POSITIVE_INFINITY;
 			this.opts.onEnded?.();
 		}
 		return this.refusal;
 	}
 
 	/**
-	 * The session stopped working (expired, revoked). Sign in again — unless a
+	 * Ask the forum whether it still honours this session: true or false, or
+	 * undefined when it cannot tell (unreachable, an error page, maintenance).
+	 * A probe only — it keeps no cookie the forum sets, so it cannot disturb a
+	 * sign-in running alongside it.
+	 */
+	async check(): Promise<boolean | undefined> {
+		if (!this.uid || !this.cookies.size) return false;
+		try {
+			const res = await fetch(`${this.opts.url}/api/config`, {
+				headers: { accept: 'application/json', 'user-agent': USER_AGENT, ...this.headers('GET') },
+				signal: AbortSignal.timeout(this.opts.timeoutMs),
+			});
+			if (!res.ok) return undefined;
+			const config = await res.json() as Raw;
+			const honoured = Number(config.uid) === this.uid;
+			if (honoured) this.confirm();
+			return honoured;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * A request suggests the session stopped working (expired, revoked). Ask the
+	 * forum: a 401 or a refused write can also come from a proxy, and ending a
+	 * person's access or spending a sign-in on that would be wrong. Sign in
+	 * again only when the forum confirms the session is gone — and not when a
 	 * sign-in already happened since the failing request was sent.
 	 */
 	async renew(seenGeneration: number): Promise<void> {
-		if (this.refusal) throw this.refusal;
+		const refusal = this.heldRefusal();
+		if (refusal) throw refusal;
+		if (this.signingIn) return this.signingIn;
+		if (seenGeneration !== this.generation) return;
+		// Still honoured, or unknown: keep the session; the caller's retry reports the failure.
+		if (await this.check() !== false) return;
 		if (this.signingIn) return this.signingIn;
 		if (seenGeneration !== this.generation) return;
 		if (this.opts.password === undefined) throw this.ended();
@@ -259,9 +303,17 @@ export class PasswordSession {
 	}
 
 	private signIn(): Promise<void> {
-		this.signingIn ??= this.doSignIn().finally(() => {
-			this.signingIn = undefined;
-		});
+		this.signingIn ??= this.doSignIn()
+			.catch((err: unknown) => {
+				// Never leave step 1's anonymous session behind as if it were ours.
+				this.cookies.clear();
+				this.csrf = undefined;
+				this.uid = 0;
+				throw err;
+			})
+			.finally(() => {
+				this.signingIn = undefined;
+			});
 		return this.signingIn;
 	}
 
@@ -387,8 +439,16 @@ export class PasswordSession {
 		return this.opts.now?.() ?? Date.now();
 	}
 
+	/** Read the session file once; concurrent callers share the one read (see ensure()). */
 	private async load(): Promise<void> {
-		this.loaded = true;
+		try {
+			await this.loadFile();
+		} finally {
+			this.loaded = true;
+		}
+	}
+
+	private async loadFile(): Promise<void> {
 		if (!this.opts.sessionFile) return;
 		let file: SessionFile;
 		try {
@@ -404,6 +464,7 @@ export class PasswordSession {
 			const samePassword = refused.reason !== 'credentials' || matches(this.opts.password ?? '', refused.salt, refused.hash);
 			if (samePassword) {
 				this.refusal = new SignInError(refused.reason, `${refused.message} (Remembered from an earlier attempt.)`);
+				this.refusalUntil = refused.until;
 				return;
 			}
 		}
@@ -416,6 +477,7 @@ export class PasswordSession {
 
 	private async refuse(refusal: SignInError): Promise<void> {
 		this.refusal = refusal;
+		this.refusalUntil = this.now() + REFUSAL_HOLD_MS;
 		this.cookies.clear();
 		this.csrf = undefined;
 		this.uid = 0;
@@ -449,18 +511,9 @@ export class PasswordSession {
 		});
 	}
 
-	/** Atomic, owner-only write. A cache failure never breaks a request. */
+	/** Atomic, owner-only write. A cache failure never breaks a request: the session still works in memory. */
 	private async write(file: SessionFile): Promise<void> {
-		const path = this.opts.sessionFile;
-		if (!path) return;
-		try {
-			await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-			const tmp = `${path}.${process.pid}.tmp`;
-			await writeFile(tmp, `${JSON.stringify(file)}\n`, { mode: 0o600 });
-			await rename(tmp, path);
-		} catch {
-			// The cache is an optimisation; the session still works in memory.
-		}
+		if (this.opts.sessionFile) await writePrivateJson(this.opts.sessionFile, file);
 	}
 }
 

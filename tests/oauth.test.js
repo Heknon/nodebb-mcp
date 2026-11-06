@@ -13,6 +13,7 @@ import { join } from 'node:path';
 
 import { loadConfig } from '../dist/config.js';
 import { startHttpServer } from '../dist/http.js';
+import { OAuthStore } from '../dist/oauth/store.js';
 import { PASSWORDS, startFakeForum } from './fake-forum.js';
 import { TestOAuthClient, connectWithSignIn, signInWithBrowser, submitSignInForm, tryConnect } from './oauth-harness.js';
 
@@ -158,6 +159,56 @@ test('refresh tokens rotate, and an old one is refused', async (t) => {
 	const again = await refresh(first);
 	assert.equal(again.status, 400);
 	assert.equal((await again.json()).error, 'invalid_grant');
+});
+
+test('a refresh token presented by another client is refused without burning it', async (t) => {
+	const { server, signIn } = await setup(t);
+	const owner = await signIn(MAINTAINER);
+	const other = await signIn(OUTSIDER, new TestOAuthClient('another client'));
+	const refresh = (token, clientId) => fetch(`${server.url}/token`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: token, client_id: clientId }),
+	});
+	const stolen = await refresh(owner.oauth.tokens().refresh_token, other.oauth.clientInformation().client_id);
+	assert.equal(stolen.status, 400);
+	const mine = await refresh(owner.oauth.tokens().refresh_token, owner.oauth.clientInformation().client_id);
+	assert.equal(mine.status, 200, 'the owner can still refresh');
+});
+
+test('a forum in maintenance during a refresh does not end anyone\'s access', async (t) => {
+	const { forum, server, signIn } = await setup(t);
+	const mcp = await signIn(MAINTAINER);
+	forum.interceptNext('/api/config', 503, { contentType: 'application/json', text: '{"error":"maintenance"}' });
+	const res = await fetch(`${server.url}/token`, {
+		method: 'POST',
+		headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		body: new URLSearchParams({
+			grant_type: 'refresh_token',
+			refresh_token: mcp.oauth.tokens().refresh_token,
+			client_id: mcp.oauth.clientInformation().client_id,
+		}),
+	});
+	assert.equal(res.status, 200);
+	assert.equal(forum.sessionsFor(8), 1, 'the forum session is kept');
+});
+
+test('access tokens that ran out are dropped, so hourly refreshes do not grow the state file forever', async () => {
+	const file = await stateFile();
+	let clock = Date.now();
+	const store = new OAuthStore('http://forum.example', file, () => clock);
+	const pending = store.addPending({ clientId: 'c', redirectUri: 'http://localhost/cb', codeChallenge: 'x', scopes: ['forum'] });
+	const code = store.completeSignIn(pending, { uid: 8, username: 'maintainer', session: { cookies: { 'express.sid': 's' }, csrf: 't', uid: 8 } });
+	const { grantId } = store.peekCode(code);
+	for (let hour = 0; hour < 6; hour += 1) {
+		store.issueTokens(grantId, 'c', ['forum']);
+		clock += 2 * 60 * 60 * 1000;
+	}
+	const last = store.issueTokens(grantId, 'c', ['forum']);
+	assert.ok(store.findAccess(last.access_token), 'the newest token works');
+	await new Promise(r => setTimeout(r, 100)); // writes are queued
+	const saved = JSON.parse(await readFile(file, 'utf8'));
+	assert.equal(Object.values(saved.tokens).filter(token => token.kind === 'access').length, 1);
 });
 
 test('PKCE is enforced: a code with the wrong verifier is refused', async (t) => {

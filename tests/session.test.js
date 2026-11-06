@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import { NodeBBClient } from '../dist/client.js';
 import { ConfigError, loadConfig } from '../dist/config.js';
+import { PasswordSession, SignInError } from '../dist/session.js';
 import { PASSWORDS, startFakeForum } from './fake-forum.js';
 import { connect } from './mcp-harness.js';
 
@@ -269,4 +270,115 @@ test('"no session granted" is not remembered across processes', async (t) => {
 		await mcp.close();
 	}
 	assert.equal(forum.loginAttempts.length, 2, 'each process may try again once the user fixes it');
+});
+
+/* ------------------------------------------- races, holds, proxies (CR round 1) */
+
+const sessionFor = (forum, extra = {}) => new PasswordSession({
+	url: forum.url,
+	username: 'maintainer',
+	password: PASSWORDS[8],
+	sessionFile: undefined,
+	timeoutMs: 5000,
+	...extra,
+});
+
+async function until(check, what) {
+	for (let i = 0; i < 200; i += 1) {
+		if (check()) return;
+		// eslint-disable-next-line no-await-in-loop
+		await new Promise(r => setTimeout(r, 5));
+	}
+	throw new Error(`timed out waiting for ${what}`);
+}
+
+test('a request that arrives mid-sign-in waits for it instead of going out as a guest', async (t) => {
+	const forum = await startFakeForum({ loginDelayMs: 150 });
+	t.after(() => forum.close());
+	const session = sessionFor(forum);
+	const first = session.ensure();
+	// Step 1 (the anonymous session and its CSRF token) is done; the login is in flight.
+	await until(() => forum.requests.some(r => r.path === '/api/config'), 'step 1 of the sign-in');
+	await session.ensure();
+	assert.equal(session.uid, 8, 'the second caller holds the signed-in session, not the anonymous one');
+	await first;
+	assert.equal(session.logins, 1);
+});
+
+test('concurrent first callers read the session file once and do not sign in again', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const sessionFile = await tempFile();
+	await sessionFor(forum, { sessionFile }).ensure();
+	assert.equal(forum.loginAttempts.length, 1);
+
+	const next = sessionFor(forum, { sessionFile });
+	await Promise.all([next.ensure(), next.ensure(), next.ensure()]);
+	assert.equal(next.logins, 0, 'the cached session was used by every caller');
+	assert.equal(forum.loginAttempts.length, 1);
+	assert.equal(next.uid, 8);
+});
+
+test('a sign-in that fails part-way leaves no anonymous session that passes for a signed-in one', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const session = sessionFor(forum);
+	forum.interceptNext('/api/v3/utilities/login', 502, { text: 'Bad Gateway' });
+	await assert.rejects(session.ensure(), /HTTP 502/);
+	await session.ensure();
+	assert.equal(session.uid, 8, 'the next call signed in for real');
+	assert.equal(session.logins, 2);
+});
+
+test('a lock is held for an hour in a long-running process, then sign-in is tried again', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	let clock = Date.now();
+	const session = sessionFor(forum, { now: () => clock });
+	forum.lockAccount(8);
+	await assert.rejects(session.ensure(), err => err instanceof SignInError && err.reason === 'account-locked');
+	await assert.rejects(session.ensure(), /locked/);
+	assert.equal(session.logins, 1, 'not retried while the lock holds');
+
+	forum.unlockAccount(8);
+	clock += 61 * 60 * 1000;
+	await session.ensure();
+	assert.equal(session.uid, 8);
+	assert.equal(session.logins, 2);
+});
+
+test('a proxy\'s plain 403 on a write does not spend a sign-in when the forum still honours the session', async (t) => {
+	const { forum, mcp } = await signedIn(t);
+	await mcp.call('forum_capabilities');
+	forum.interceptNext('/api/v3/plugins/shotef/tickets/13/notes', 403, { method: 'POST', text: 'Forbidden' });
+
+	const { text, isError } = await mcp.call('add_ticket_note', { tid: 13, body: 'past the proxy' });
+	assert.equal(isError, false, text);
+	assert.equal(forum.notes[13].at(-1).body, 'past the proxy');
+	assert.equal(forum.loginAttempts.length, 1, 'no second sign-in');
+});
+
+test('a password-less (OAuth) session survives a proxy\'s 401, and still ends when the forum ends it', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const state = await sessionFor(forum).signInNow();
+	let ended = 0;
+	const session = new PasswordSession({
+		url: forum.url, username: 'maintainer', initial: state, sessionFile: undefined, timeoutMs: 5000,
+		onEnded: () => { ended += 1; },
+	});
+	const config = loadConfig({ NODEBB_URL: forum.url, NODEBB_SESSION_CHECK_MS: '0' });
+	const client = new NodeBBClient(config, { session });
+
+	forum.interceptNext('/api/v3/plugins/shotef/board', 401, { contentType: 'application/json', text: '{}' });
+	const board = await client.v3('/plugins/shotef/board');
+	assert.equal(board.team.id, 'core');
+	assert.equal(ended, 0, 'a 401 from in front of the forum does not end the grant');
+
+	forum.interceptNext('/api/config', 503, { contentType: 'application/json', text: '{"error":"maintenance"}' });
+	assert.equal(await session.check(), undefined, 'maintenance is "cannot tell", not "ended"');
+
+	forum.expireSessions();
+	await assert.rejects(client.v3('/plugins/shotef/board'), /has ended/);
+	assert.equal(ended, 1);
 });

@@ -233,8 +233,8 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 		_scopes?: string[],
 		resource?: URL,
 	): Promise<OAuthTokens> {
-		const entry = this.store.takeRefresh(refreshToken);
-		if (!entry || entry.clientId !== client.client_id) {
+		const entry = this.store.takeRefresh(refreshToken, client.client_id);
+		if (!entry) {
 			throw new InvalidGrantError('Invalid refresh token — sign in again');
 		}
 		if (resource && entry.resource && resource.href !== entry.resource) throw new InvalidGrantError('resource does not match');
@@ -276,19 +276,18 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 		await session.signOut();
 	}
 
-	/** Does the forum still honour this grant's session? */
+	/**
+	 * Does the forum still honour this grant's session? Only a clear "no" ends the
+	 * grant: an unreachable forum, maintenance or an error page is not proof.
+	 */
 	private async forumSessionAlive(grant: Grant): Promise<boolean> {
-		try {
-			const cookie = Object.entries(grant.session.cookies).map(([name, value]) => `${name}=${value}`).join('; ');
-			const res = await fetch(`${this.config.url}/api/config`, {
-				headers: { cookie, accept: 'application/json', 'user-agent': USER_AGENT },
-				signal: AbortSignal.timeout(this.config.timeoutMs),
-			});
-			const config = await res.json() as { uid?: number | string };
-			return Number(config.uid) === grant.uid;
-		} catch {
-			// The forum is unreachable: not proof the session ended; let the tools report it.
-			return true;
-		}
+		const session = new PasswordSession({
+			url: this.config.url,
+			username: grant.username,
+			initial: grant.session,
+			sessionFile: undefined,
+			timeoutMs: this.config.timeoutMs,
+		});
+		return (await session.check()) !== false;
 	}
 }
