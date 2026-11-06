@@ -9,8 +9,9 @@ import { registerPrompts } from './prompts.js';
 import { registerResources } from './resources.js';
 import { registerAllTools } from './tools/index.js';
 
-export const SERVER_NAME = 'nodebb-mcp';
-export const SERVER_VERSION = '0.1.0';
+import { SERVER_NAME, SERVER_VERSION } from './version.js';
+
+export { SERVER_NAME, SERVER_VERSION };
 
 const INSTRUCTIONS = `Tools for investigating issues and finding answers on a NodeBB forum.
 

@@ -176,6 +176,28 @@ async function ensureBaseline() {
 	await ensureUser('e2e_wrongpass');
 }
 
+/**
+ * The fixture tickets' triage state, through Shotef's HTTP ticket routes. Every
+ * call is idempotent, so a reused fixture gets it again: a ticket changed by
+ * hand (a demo, a screenshot) or by an interrupted run is put back.
+ */
+async function applyTriageState(topics, uids) {
+	const steps = [
+		[topics.redis.tid, '/solved', { pid: topics.redis.answerPid }],
+		[topics.redis.tid, '/status', { status: 'closed' }],
+		[topics.symlink.tid, '/assignee', { uid: uids.maintainer, teamId: TEAM_ID }],
+		[topics.symlink.tid, '/priority', { priority: 'high' }],
+		[topics.symlink.tid, '/help-wanted', { on: false }],
+		[topics.symlink.tid, '/status', { status: 'in_work' }],
+		[topics.images.tid, '/status', { status: 'blocked' }],
+		[topics.digest.tid, '/status', { status: 'responded' }],
+	];
+	for (const [tid, path, body] of steps) {
+		// eslint-disable-next-line no-await-in-loop
+		await call(admin, 'PUT', ticket(tid, path), body);
+	}
+}
+
 async function seed() {
 	// --- users --------------------------------------------------------------
 	const uids = { admin };
@@ -274,16 +296,7 @@ async function seed() {
 	topics.staff = await post(admin, cids.staff, 'Internal: rotating the Redis password',
 		'Rotate it quarterly and update config.json on every node.');
 
-	// --- triage state, through Shotef's HTTP ticket routes ------------------
-	await call(admin, 'PUT', ticket(topics.redis.tid, '/solved'), { pid: topics.redis.answerPid });
-	await call(admin, 'PUT', ticket(topics.redis.tid, '/status'), { status: 'closed' });
-
-	await call(admin, 'PUT', ticket(topics.symlink.tid, '/assignee'), { uid: uids.maintainer, teamId: TEAM_ID });
-	await call(admin, 'PUT', ticket(topics.symlink.tid, '/priority'), { priority: 'high' });
-	await call(admin, 'PUT', ticket(topics.symlink.tid, '/status'), { status: 'in_work' });
-
-	await call(admin, 'PUT', ticket(topics.images.tid, '/status'), { status: 'blocked' });
-	await call(admin, 'PUT', ticket(topics.digest.tid, '/status'), { status: 'responded' });
+	await applyTriageState(topics, uids);
 
 	// --- tokens for the identities the tests act as --------------------------
 	const minted = mintTokens([admin, uids.maintainer, uids.outsider]);
@@ -313,6 +326,7 @@ async function seed() {
 	const existing = await readFixture();
 	if (existing && !FRESH) {
 		log(`fixture still intact on ${URL_BASE}; reusing ${FIXTURE_FILE} (pass --fresh to rebuild)`);
+		await applyTriageState(existing.topics, existing.uids);
 		return;
 	}
 	MASTER = mintTokens([0])['0'];

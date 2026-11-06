@@ -144,6 +144,9 @@ test('signing a session out on the forum ends that person\'s access, and only th
 	const asHelper = `_uid=${fx.uids.helper}`;
 	const sessions = (await (await fetch(`${fx.url}/api/user/e2e_helper/sessions?${asHelper}`, { headers: auth })).json()).sessions;
 	assert.ok(sessions.length, 'the helper has sessions to sign out');
+	// The person can tell the MCP's session apart from their browsers'.
+	assert.ok(sessions.some(s => s.browser === 'nodebb-mcp' && /^\d+\.\d+\.\d+$/.test(s.version)),
+		`a session labelled nodebb-mcp: ${JSON.stringify(sessions.map(s => [s.browser, s.version, s.platform]))}`);
 	for (const { uuid } of sessions) {
 		// eslint-disable-next-line no-await-in-loop
 		await fetch(`${fx.url}/api/v3/users/${fx.uids.helper}/sessions/${uuid}?${asHelper}`, { method: 'DELETE', headers: auth });

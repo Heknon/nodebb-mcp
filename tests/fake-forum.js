@@ -169,6 +169,8 @@ export async function startFakeForum(opts = {}) {
 	const sessions = new Map();
 	/** Every counted login attempt, in order: { username, ok } */
 	const loginAttempts = [];
+	/** The User-Agent of each successful login: NodeBB labels the session with it. */
+	const loginUserAgents = [];
 	const failures = {};
 	const locked = new Set();
 	const newSid = () => randomBytes(12).toString('hex');
@@ -368,6 +370,7 @@ export async function startFakeForum(opts = {}) {
 			loginAttempts.push({ username: name, ok });
 			if (!ok) return html(403, '[[error:invalid-login-credentials]]');
 			failures[key] = 0;
+			loginUserAgents.push(req.headers['user-agent'] ?? '');
 			if (!opts.loginWithoutSession) {
 				// Login regenerates the session id and keeps the CSRF token.
 				sessions.delete(sid);
@@ -713,6 +716,7 @@ export async function startFakeForum(opts = {}) {
 		tickets,
 		notes,
 		loginAttempts,
+		loginUserAgents,
 		/** Expire every session, as a server-side TTL or a revocation would. */
 		expireSessions() { sessions.clear(); },
 		/** Signed-in sessions, by uid (for asserting sign-out). */

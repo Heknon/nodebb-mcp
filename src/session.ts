@@ -36,6 +36,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 import { NodeBBError } from './errors.js';
+import { USER_AGENT } from './version.js';
 
 export interface PasswordSessionOptions {
 	url: string;
@@ -345,7 +346,7 @@ export class PasswordSession {
 
 	/** One raw request on the session (sign-in traffic; bypasses the client's retry logic). */
 	private async send(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Response> {
-		const headers: Record<string, string> = { accept: 'application/json', ...this.headers(method) };
+		const headers: Record<string, string> = { accept: 'application/json', 'user-agent': USER_AGENT, ...this.headers(method) };
 		if (body !== undefined) headers['content-type'] = 'application/json';
 		let response: Response;
 		try {

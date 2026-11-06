@@ -143,7 +143,8 @@ as you"*, with the forum username and password. The password goes to the forum's
 own login and is not stored; the forum session it creates is kept (owner-only
 state file) and the client gets OAuth tokens (stored hashed). Access ends when that
 forum session does: it expires, the person signs it out from their forum account's
-sessions page, or the client revokes its refresh token, which signs the session out. The
+sessions page (where it is listed as *nodebb-mcp 0.1.0 on Linux*, or the server's
+OS), or the client revokes its refresh token, which signs the session out. The
 client is then sent to sign in again.
 
 | Variable | Default | Purpose |

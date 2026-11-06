@@ -18,6 +18,7 @@
 import type { Config } from './config.js';
 import { NodeBBError, type FailureKind } from './errors.js';
 import { PasswordSession } from './session.js';
+import { USER_AGENT } from './version.js';
 
 export interface RequestOptions {
 	method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
@@ -178,7 +179,7 @@ export class NodeBBClient {
 		if (this.session) await this.session.ensure();
 		const generation = this.session?.currentGeneration ?? 0;
 
-		const headers: Record<string, string> = { accept: 'application/json' };
+		const headers: Record<string, string> = { accept: 'application/json', 'user-agent': USER_AGENT };
 		if (this.session) Object.assign(headers, this.session.headers(method));
 		else if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
 		if (body !== undefined) headers['content-type'] = 'application/json';

@@ -62,6 +62,11 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
   `DELETE /api/v3/users/:uid/sessions/:uuid` revokes (self or admin).
 - A bearer-token request also creates a server session (`finishLogin`), so a
   user's session list includes token traffic.
+- **Session labels come from the sign-in's User-Agent** (`express-useragent`,
+  stored at login): Node's default fetch UA shows as *"unknown unknown on
+  unknown"*. `nodebb-mcp/0.1.0 (Linux)` shows as *"nodebb-mcp 0.1.0 on Linux"*,
+  so `src/version.ts` sends that on every request. Avoid `curl` in the UA: the
+  parser flags it as a bot.
 - **Logout** is `POST /logout` with the session cookie and `x-csrf-token`; after
   it the cookie is a guest's. (The OAuth `/revoke` path relies on this.)
 

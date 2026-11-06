@@ -27,12 +27,13 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | File | Role |
 | --- | --- |
 | `e2e/mint-tokens.cjs` | NodeBB-context script: idempotent API tokens (`uid 0` = master). HTTP token creation needs a password re-auth; tokens have no cache, so this is safe behind a live forum. |
-| `e2e/seed.mjs` | The fixture, through the live Write API as each user (master token + `_uid`), so plugin hooks fire. Writes `e2e/.fixture.json` (gitignored): ids, uids, cids, tokens. Reuses an intact fixture; `--fresh` purges categories + team and rebuilds. |
+| `e2e/seed.mjs` | The fixture, through the live Write API as each user (master token + `_uid`), so plugin hooks fire. Writes `e2e/.fixture.json` (gitignored): ids, uids, cids, tokens. Reuses an intact fixture (re-applying the fixture tickets' triage state, so a hand-made change never leaks into the next run); `--fresh` purges categories + team and rebuilds. |
 | `tests/e2e/harness.js` | `e2e({ needs })` → `{ fixture, opts }` (skip reason when the forum is absent or in the wrong plugin state, asked of the forum itself); `spawnMcp(fixture, { as, env })`; `eventually()`; `grabId()`. |
 | `tests/e2e/read.e2e.test.js` | Read tools as admin / team member / outsider / guest / bogus token / master ± `NODEBB_UID`. |
 | `tests/e2e/write.e2e.test.js` | One ticket's whole life: the reporter, the team member *without* the writes flag (all ticket work), and the same member *with* it (public reply, accepting the answer), as separate processes. Per-run marker in titles so reruns never collide. |
 | `tests/e2e/session.e2e.test.js` | Password sign-in on the real forum: identity, cookie + CSRF writes (Shotef and core), session reuse across processes, renewal after a real revocation, a wrong password tried once. |
-| `tests/e2e/oauth.e2e.test.js` | The shared HTTP server, spawned as `node dist/index.js` with `NODEBB_MCP_HTTP_PORT`: discovery, two real people signing in (SDK OAuth client + scripted browser), isolation, a wrong password on the page, a session signed out on the forum ending only that person's access, `/revoke` logging NodeBB out, the state file holding no password or usable token. |
+| `tests/e2e/oauth.e2e.test.js` | The shared HTTP server, spawned as `node dist/index.js` with `NODEBB_MCP_HTTP_PORT`: discovery, two real people signing in (SDK OAuth client + scripted browser), isolation, a wrong password on the page, a session signed out on the forum ending only that person's access (and listed as `nodebb-mcp` there), `/revoke` logging NodeBB out, the state file holding no password or usable token. |
+| `tests/e2e/oauth-browser.e2e.test.js` | The sign-in page in headless Chromium (Playwright): a wrong password, then the right one, the redirect back to the client, and the client connecting. Catches what only a browser enforces (CSP, form-action resolution). Skips without Playwright. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture

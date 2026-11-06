@@ -34,6 +34,7 @@ import { ForumOAuthProvider, SCOPE } from './oauth/provider.js';
 import { OAuthStore } from './oauth/store.js';
 import { buildServer } from './server.js';
 import { PasswordSession } from './session.js';
+import { USER_AGENT } from './version.js';
 
 export interface RunningHttpServer {
 	/** The public base URL; the MCP endpoint is `${url}/mcp`. */
@@ -51,7 +52,10 @@ const rpcError = (code: number, message: string) => ({ jsonrpc: '2.0', error: { 
 
 async function forumTitle(config: Config): Promise<string> {
 	try {
-		const res = await fetch(`${config.url}/api/config`, { signal: AbortSignal.timeout(config.timeoutMs) });
+		const res = await fetch(`${config.url}/api/config`, {
+			headers: { 'user-agent': USER_AGENT },
+			signal: AbortSignal.timeout(config.timeoutMs),
+		});
 		const body = await res.json() as { siteTitle?: string };
 		if (body.siteTitle) return body.siteTitle;
 	} catch {

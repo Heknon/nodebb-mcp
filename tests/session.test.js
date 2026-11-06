@@ -58,6 +58,8 @@ test('signs in and acts as that user, verified by the forum', async (t) => {
 	assert.match(text, /Acting as:\*\* maintainer \(uid 8\) — verified by the forum/);
 	assert.match(text, /Triage actions .* \| ✅ available/);
 	assert.deepEqual(forum.loginAttempts, [{ username: 'maintainer', ok: true }]);
+	// NodeBB labels the session on the person's sessions page from this.
+	assert.match(forum.loginUserAgents[0], /^nodebb-mcp\/\d+\.\d+\.\d+ \(\w[^)]*\)$/);
 	// Never a bearer token, never _uid: this is a cookie session.
 	assert.ok(forum.requests.every(r => !r.auth && !('_uid' in r.query)));
 });
