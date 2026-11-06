@@ -21,7 +21,7 @@ import type { Capabilities } from '../capabilities.js';
 import { isUsable } from '../capabilities.js';
 import { NodeBBError } from '../errors.js';
 import {
-	applyTicketAction, explainShotefError, getTicket, type TicketAction,
+	applyTicketAction, explainShotefError, intakeTeamsFor, isShotefRefusal, openTicket, type TicketAction,
 } from '../integrations/shotef.js';
 import type { ToolContext } from './context.js';
 import { failure, stageLabel, text, toolError, type ToolResult } from './format.js';
@@ -42,8 +42,8 @@ export function triageBlocker(caps: Capabilities): ToolResult | undefined {
 export const actingAs = (caps: Capabilities) => caps.forum.username ?? `uid ${caps.forum.uid}`;
 
 /** "Now: `in_work` (In progress) · owner: … · priority: …" — the ticket after a change. */
-async function ticketNow(ctx: ToolContext, tid: number): Promise<string[]> {
-	const ticket = await getTicket(ctx.client, ctx.config, tid).catch(() => undefined);
+async function ticketNow(ctx: ToolContext, caps: Capabilities, tid: number): Promise<string[]> {
+	const ticket = await openTicket(ctx.client, ctx.config, caps, tid).catch(() => undefined);
 	if (!ticket) return [];
 	return [
 		`**Now:** \`${ticket.status}\` (${stageLabel(ticket.publicStatus)})` +
@@ -65,8 +65,24 @@ async function runAction(
 		const caps = await ctx.capabilities.get();
 		const blocked = triageBlocker(caps);
 		if (blocked) return blocked;
-		await applyTicketAction(ctx.client, ctx.config, tid, action);
-		return text([describe.done(caps), '', ...(await ticketNow(ctx, tid))].join('\n').trim());
+		await applyTicketAction(ctx.client, ctx.config, tid, action).catch(async (err: unknown) => {
+			// An intake ticket (shared between teams, taken by none): a claim must say
+			// which team takes it. Without a team given, use the one of the user's teams
+			// that holds it — when there is exactly one.
+			if (!('teamId' in action) || action.teamId || !isShotefRefusal(err, 'err-not-owning-team')) throw err;
+			const teams = await intakeTeamsFor(ctx.client, ctx.config, caps, tid).catch(() => []);
+			if (teams.length !== 1) {
+				const which = teams.map(team => `${team.name} (\`${team.id}\`)`).join(', ');
+				throw new NodeBBError('auth', teams.length
+					? `Ticket ${tid} is in the intake of several of your teams: ${which}. Say which takes it with team.`
+					: `Ticket ${tid} is in the intake lane of teams you are not on, so you cannot take it.`, {
+					forumMessage: teams.length ? undefined : (err as NodeBBError).forumMessage,
+				});
+			}
+			const [only] = teams as [{ id: string; name: string }];
+			await applyTicketAction(ctx.client, ctx.config, tid, { ...action, teamId: only.id });
+		});
+		return text([describe.done(caps), '', ...(await ticketNow(ctx, caps, tid))].join('\n').trim());
 	} catch (err) {
 		return toolError(describe.doing, err, explainShotefError);
 	}
@@ -144,13 +160,21 @@ export function registerTriageActions(server: McpServer, ctx: ToolContext): void
 				owner: z
 					.union([z.enum(['me', 'nobody']), z.number().int().positive()])
 					.describe('"me", "nobody", or the uid of a member of the handling team.'),
+				team: z
+					.string()
+					.min(1)
+					.optional()
+					.describe(
+						'Only for a ticket in the intake lane (shared between teams, taken by none): the team the claim ' +
+							'takes it for. Found automatically when just one of your teams shares it.',
+					),
 			},
 			annotations: TRIAGE,
 		},
-		async ({ tid, owner }) => {
+		async ({ tid, owner, team }) => {
 			const action: TicketAction = owner === 'me'
-				? { kind: 'claim' }
-				: owner === 'nobody' ? { kind: 'unclaim' } : { kind: 'assign', uid: owner };
+				? { kind: 'claim', teamId: team }
+				: owner === 'nobody' ? { kind: 'unclaim' } : { kind: 'assign', uid: owner, teamId: team };
 			return runAction(ctx, tid, action, {
 				doing: owner === 'me' ? `claim ticket ${tid}` : owner === 'nobody' ? `release ticket ${tid}` : `assign ticket ${tid} to uid ${owner}`,
 				done: caps => owner === 'me'
@@ -204,7 +228,7 @@ export function registerTriageActions(server: McpServer, ctx: ToolContext): void
 						lines.push(`- ❌ ${label} — ${said}${advice ? ` ${advice}` : ''}`);
 					}
 				}
-				lines.push('', ...(await ticketNow(ctx, tid)));
+				lines.push('', ...(await ticketNow(ctx, caps, tid)));
 				return failed === steps.length ? failure(lines.join('\n').trim()) : text(lines.join('\n').trim());
 			} catch (err) {
 				return toolError(`update priority on ticket ${tid}`, err, explainShotefError);

@@ -158,3 +158,36 @@ test('triage actions explain themselves on a forum without Shotef', async (t) =>
 	assert.match(text, /Triage actions need the Shotef plugin/);
 	assert.match(text, /reply_to_topic/);
 });
+
+test('an intake ticket (shared between teams, taken by none): listed, opened from your intake, and taken by claiming it', async (t) => {
+	const { forum, mcp } = await member(t, { NODEBB_API_TOKEN: 'maintainer-token' }, { intake: true });
+
+	const board = await mcp.call('get_triage_board');
+	assert.match(board.text, /## Intake — shared tickets nobody has taken[\s\S]*#15 SSO login loops back[\s\S]*shared by Ops, Core Support: a claim takes it for your team/);
+
+	// Shotef refuses the plain read (Ops is the first owner); the view from our intake works.
+	const ticket = await mcp.call('get_ticket', { tid: 15 });
+	assert.equal(ticket.isError, false, ticket.text);
+	assert.match(ticket.text, /\*\*Team:\*\* none yet — it is in the intake lane/);
+	assert.doesNotMatch(ticket.text, /Read-only for you: you are not on the handling team/);
+	assert.ok(forum.requests.some(r => r.path === '/api/v3/plugins/shotef/tickets/15' && r.query.team === 'core'));
+
+	// Other actions are refused until a team takes it.
+	const note = await mcp.call('add_ticket_note', { tid: 15, body: 'before taking it' });
+	assert.equal(note.isError, true);
+
+	const claim = await mcp.call('assign_ticket', { tid: 15, owner: 'me' });
+	assert.equal(claim.isError, false, claim.text);
+	assert.match(claim.text, /Claimed ticket #15 as maintainer/);
+	assert.equal(forum.tickets[15].team, 'core');
+	assert.equal(forum.tickets[15].claimedBy, 8);
+	assert.match((await mcp.call('get_ticket', { tid: 15 })).text, /\*\*Team:\*\* Core Support \(core\)/);
+});
+
+test('claiming an intake ticket for a team you are not on is refused with the reason', async (t) => {
+	const { forum, mcp } = await member(t, { NODEBB_API_TOKEN: 'maintainer-token' }, { intake: true });
+	const claim = await mcp.call('assign_ticket', { tid: 15, owner: 'me', team: 'ops' });
+	assert.equal(claim.isError, true);
+	assert.match(claim.text, /doesn't own this ticket's category|intake lane/);
+	assert.equal(forum.tickets[15].contended, true, 'still untaken');
+});

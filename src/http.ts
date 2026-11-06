@@ -30,10 +30,9 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { CapabilityRegistry } from './capabilities.js';
 import { NodeBBClient } from './client.js';
 import type { Config } from './config.js';
-import { ForumOAuthProvider, SCOPE } from './oauth/provider.js';
+import { ForumOAuthProvider, SCOPE, grantSession } from './oauth/provider.js';
 import { OAuthStore } from './oauth/store.js';
 import { buildServer } from './server.js';
-import { PasswordSession } from './session.js';
 import { USER_AGENT } from './version.js';
 
 export interface RunningHttpServer {
@@ -98,12 +97,7 @@ export async function startHttpServer(config: Config, log: (message: string) => 
 		if (known) return known;
 		const grant = store.liveGrant(grantId);
 		if (!grant) return undefined;
-		const session = new PasswordSession({
-			url: config.url,
-			username: grant.username,
-			initial: grant.session,
-			sessionFile: undefined,
-			timeoutMs: config.timeoutMs,
+		const session = grantSession(config, grant, {
 			onChange: state => store.updateGrantSession(grantId, state),
 			onEnded: () => {
 				store.endGrant(grantId);

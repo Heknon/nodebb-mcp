@@ -132,6 +132,8 @@ export interface BoardCard {
 	isSolved?: boolean;
 	/** Read-only mirror of a ticket passed to another team. */
 	ghost?: boolean;
+	/** Intake: the teams sharing the ticket's category, one of which must take it. */
+	owners?: string[];
 	handledBy?: string;
 	openDays?: number;
 	idleDays?: number;
@@ -182,6 +184,7 @@ function toCard(client: NodeBBClient, raw: Raw, column: string, lane: BoardCard[
 		helpWanted: Boolean(raw.helpWanted),
 		...(raw.isQuestion ? { isQuestion: true, isSolved: Boolean(raw.isSolved) } : {}),
 		ghost: Boolean(raw.ghost) || undefined,
+		owners: Array.isArray(raw.owners) ? raw.owners.map((owner: Raw) => decodeTitle(owner?.name, String(owner?.id ?? ''))) : undefined,
 		handledBy: raw.handledByName ? decodeTitle(raw.handledByName) : undefined,
 		openDays: days(raw.openDays),
 		idleDays: days(raw.idleDays),
@@ -211,6 +214,7 @@ export async function getBoard(
 		return { ...empty, reason: capabilities.shotef.reason };
 	}
 
+	teamId = teamId?.trim() || undefined;
 	let raw: Raw | undefined;
 	try {
 		raw = await client.v3<Raw>(`${base(config)}/board`, teamId ? { team: teamId } : undefined);
@@ -249,16 +253,13 @@ export async function getBoard(
 	// Shotef answers an unknown or hidden team with the viewer's default team's
 	// board, silently. Never pass that off as the team asked for.
 	if (teamId && team.id !== undefined && String(team.id) !== teamId) {
-		const byName = visible.find(entry => entry.name.toLowerCase() === teamId.trim().toLowerCase());
-		if (byName && byName.id !== teamId) return getBoard(client, config, capabilities, byName.id);
-		const who = capabilities.forum.username ?? (capabilities.forum.uid ? `uid ${capabilities.forum.uid}` : 'a guest');
-		return {
-			...empty,
-			available: true,
-			teams: visible,
-			reason: `No triage team "${teamId}" is visible to ${who}. ` +
-				`Teams they can see: ${visible.map(entry => `${entry.name} (\`${entry.id}\`)`).join(', ') || 'none'}.`,
-		};
+		// A team's name in place of its id: the board already served may be that team's.
+		const byName = visible.find(entry => entry.name.toLowerCase() === teamId.toLowerCase());
+		if (byName && byName.id !== String(team.id)) return getBoard(client, config, capabilities, byName.id);
+		if (!byName) {
+			const who = capabilities.forum.username ?? (capabilities.forum.uid ? `uid ${capabilities.forum.uid}` : 'a guest');
+			return { ...empty, available: true, teams: visible, reason: `No triage team "${teamId}" is visible to ${who}.` };
+		}
 	}
 
 	const columns: BoardColumn[] = [];
@@ -347,7 +348,9 @@ export async function searchTickets(
 ): Promise<TicketSearch> {
 	const first = await getBoard(client, config, capabilities, filters.team);
 	if (!first.available || !first.columns.length) {
-		return { available: first.available, reason: first.reason, teams: [], tickets: [] };
+		const visible = first.teams.map(team => `${team.name} (\`${team.id}\`)`).join(', ');
+		const reason = [first.reason, visible ? `Teams they can see: ${visible}.` : ''].filter(Boolean).join(' ');
+		return { available: first.available, reason, teams: [], tickets: [] };
 	}
 
 	const boards = [first];
@@ -431,6 +434,11 @@ export async function searchTickets(
 
 export interface TicketDetail {
 	tid: number;
+	/**
+	 * Shared between teams and taken by none (the intake lane). Shotef then names
+	 * the first owning team as `team`, and nobody can act on it until a claim takes it.
+	 */
+	contended: boolean;
 	title: string;
 	url: string;
 	category?: string;
@@ -460,11 +468,14 @@ export async function getTicket(
 	client: NodeBBClient,
 	config: Config,
 	tid: number,
+	/** The board it is viewed from: required for a team's intake (or ghost) copy. */
+	viewTeam?: string,
 ): Promise<TicketDetail> {
-	const raw = await client.v3<Raw>(ticketPath(config, tid));
+	const raw = await client.v3<Raw>(ticketPath(config, tid), viewTeam ? { team: viewTeam } : undefined);
 	const name = (who: Raw | undefined) => (who?.username ? decodeTitle(who.username) : undefined);
 	return {
 		tid: Number(raw.tid),
+		contended: Boolean(raw.contended),
 		title: decodeTitle(raw.title, `Topic #${tid}`),
 		url: client.link(`/topic/${raw.slug || tid}`),
 		category: decodeTitle(raw.category) || undefined,
@@ -505,9 +516,10 @@ export async function getTicket(
 
 export type TicketAction =
 	| { kind: 'status'; status: string; closeReason?: string; note?: string }
-	| { kind: 'claim' }
+	// teamId: the team an intake ticket is taken for by the claim.
+	| { kind: 'claim'; teamId?: string }
 	| { kind: 'unclaim' }
-	| { kind: 'assign'; uid: number }
+	| { kind: 'assign'; uid: number; teamId?: string }
 	| { kind: 'priority'; priority: string }
 	| { kind: 'help-wanted'; on: boolean }
 	| { kind: 'note'; body: string }
@@ -526,11 +538,11 @@ export async function applyTicketAction(
 		case 'status':
 			return client.write('PUT', path('/status'), { status: action.status, closeReason: action.closeReason, note: action.note });
 		case 'claim':
-			return client.write('PUT', path('/claim'), {});
+			return client.write('PUT', path('/claim'), action.teamId ? { teamId: action.teamId } : {});
 		case 'unclaim':
 			return client.write('DELETE', path('/claim'), {});
 		case 'assign':
-			return client.write('PUT', path('/assignee'), { uid: action.uid });
+			return client.write('PUT', path('/assignee'), { uid: action.uid, ...(action.teamId ? { teamId: action.teamId } : {}) });
 		case 'priority':
 			return client.write('PUT', path('/priority'), { priority: action.priority });
 		case 'help-wanted':
@@ -575,7 +587,58 @@ const SHOTEF_ADVICE: [key: string, english: string, advice: string][] = [
 	['err-reply-not-on-topic', "That reply doesn't belong to this ticket", 'That post does not belong to this topic.'],
 	['err-pass-self', 'That ticket is already handled by this team', 'The ticket is already handled by that team.'],
 	['err-no-team', 'No such team', 'No such team — get_triage_board lists the teams you can see.'],
+	['err-not-owning-team', "Your team doesn't own this ticket's category",
+		'This ticket is in the intake lane (shared between teams, taken by none). Claim it with team set to one ' +
+			'of your teams that shares its category; the claim takes it for that team.'],
+	['err-already-taken', 'Another team already took this ticket',
+		'Another team took this ticket first; it is now on their board.'],
 ];
+
+/** Is `err` Shotef's refusal `key` (raw key, or its English translation)? */
+export function isShotefRefusal(err: unknown, key: string): boolean {
+	if (!(err instanceof NodeBBError)) return false;
+	const english = SHOTEF_ADVICE.find(([known]) => known === key)?.[1];
+	const said = `${err.forumMessage ?? ''}\n${err.message}`;
+	return said.includes(`[[shotef:${key}]]`) || Boolean(english && said.includes(english));
+}
+
+/** The acting user's teams that hold this ticket in their intake lane. */
+export async function intakeTeamsFor(
+	client: NodeBBClient,
+	config: Config,
+	capabilities: Capabilities,
+	tid: number,
+): Promise<{ id: string; name: string }[]> {
+	const first = await getBoard(client, config, capabilities);
+	if (!first.available || !first.columns.length) return [];
+	const others = await Promise.all(first.teams
+		.filter(team => team.id !== first.teamId)
+		.map(team => getBoard(client, config, capabilities, team.id).catch(() => undefined)));
+	return [first, ...others]
+		.filter((board): board is TriageBoard => Boolean(board?.teamId && board.items.some(card => card.tid === tid && card.lane === 'intake')))
+		.map(board => ({ id: board.teamId as string, name: board.teamName ?? (board.teamId as string) }));
+}
+
+/**
+ * The ticket as the acting user can see it. A refused read may be an intake
+ * ticket viewed without its team (Shotef then needs ?team=): retry from the
+ * user's own intake.
+ */
+export async function openTicket(
+	client: NodeBBClient,
+	config: Config,
+	capabilities: Capabilities,
+	tid: number,
+): Promise<TicketDetail> {
+	try {
+		return await getTicket(client, config, tid);
+	} catch (err) {
+		if (!(err instanceof NodeBBError) || err.kind !== 'auth') throw err;
+		const [team] = await intakeTeamsFor(client, config, capabilities, tid).catch(() => []);
+		if (!team) throw err;
+		return getTicket(client, config, tid, team.id);
+	}
+}
 
 export function explainShotefError(message: string | undefined): string | undefined {
 	if (!message) return undefined;

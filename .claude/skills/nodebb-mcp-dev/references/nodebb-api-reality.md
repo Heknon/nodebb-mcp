@@ -154,6 +154,21 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
 - Card: `tid, title, slug, status, priority, claimedBy: { username } | null,
   helpWanted, isQuestion?, isSolved?, openDays, idleDays, noReplyDays?, ghost?,
   handledByName?, closeReason`.
+- **Unknown or hidden `?team=` on `/board`** is answered with the viewer's
+  *default* team's board, status 200, no hint. → compare `team.id` with what was
+  asked for; refuse (or match a team's name) rather than present the wrong board.
+- **Intake (a category two teams share).** A new ticket there is *contended*: in
+  every owning team's `intake[]` (card has `contended: true`, `owners: [{ id,
+  name }]`), taken by none. `GET /tickets/:tid` works without `?team=` only for
+  the *first* owner's members — and reports that team as `handlingTeam` with
+  `readOnly: true, contended: true`; other owners' members get 403 unless they
+  pass `?team=<their team>`. Every action but a claim is refused (403). A claim
+  needs `teamId` — without it, 403 "Your team doesn't own this ticket's
+  category" — and takes the ticket for that team. → `openTicket` retries from
+  the user's intake; `assign_ticket` resolves the team when only one fits.
+- Shotef's HTTP layer (after the API-hardening change) rejects malformed input
+  with 400 (`[[error:invalid-uid]]`, `invalid-tid`, `invalid-data`, an empty
+  note) and hides internal errors behind a 500.
 - `public-status/:tid`: `{ tracked, status: received|in_progress|answered|closed,
   label, closeReason, teamName, parked, holdReason (members only), isMember }`.
   Its `label` is **reporter-facing** ("Awaiting your reply") — render your own.

@@ -190,17 +190,23 @@ test('get_triage_status distinguishes untracked topics from missing plugins', as
 
 test('a team the viewer cannot see is refused, not swapped for their default team; a team name works', async (t) => {
 	// Shotef answers an unknown team with the viewer's default board, silently.
-	const { mcp } = await fullStack(t, { NODEBB_API_TOKEN: 'maintainer-token' });
+	const { forum, mcp } = await fullStack(t, { NODEBB_API_TOKEN: 'maintainer-token' });
 	const wrong = await mcp.call('get_triage_board', { team: 'biling' });
-	assert.match(wrong.text, /No triage team "biling" is visible to maintainer\. Teams they can see: Core Support \(`core`\)/);
+	assert.match(wrong.text, /No triage team "biling" is visible to maintainer\.\n\nVisible teams: Core Support \(core\)$/);
 	assert.doesNotMatch(wrong.text, /# Triage board — Core Support/);
 
 	const search = await mcp.call('search_tickets', { team: 'biling' });
-	assert.match(search.text, /No triage team "biling" is visible/);
+	assert.match(search.text, /No triage team "biling" is visible to maintainer\. Teams they can see: Core Support \(`core`\)\./);
 	assert.doesNotMatch(search.text, /#1[0-9] /);
 
+	const before = forum.requests.length;
 	const byName = await mcp.call('get_triage_board', { team: 'core support' });
 	assert.match(byName.text, /# Triage board — Core Support \(core\)/);
+	const boards = forum.requests.slice(before).filter(r => r.path === '/api/v3/plugins/shotef/board');
+	assert.equal(boards.length, 1, 'the board already served was the named team\'s: no second fetch');
+
+	const padded = await mcp.call('get_triage_board', { team: ' core ' });
+	assert.match(padded.text, /# Triage board — Core Support \(core\)/);
 });
 
 test('get_triage_board groups tickets by column, backlog included, closed hidden', async (t) => {

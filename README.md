@@ -68,7 +68,7 @@ What a tool may change decides when it is available:
 | `get_ticket` | A ticket with its history and internal notes | nothing | Shotef, team member |
 | `add_ticket_note` | Leave an internal note only the team sees | ticket | Shotef, team member |
 | `set_ticket_status` | Move a ticket, or close it as resolved or no-response | ticket | Shotef, team member |
-| `assign_ticket` | Claim, release, or assign a ticket | ticket | Shotef, team member (manager to assign someone else) |
+| `assign_ticket` | Claim, release, or assign a ticket. Claiming a ticket in the intake lane (a category two teams share, taken by neither) takes it for your team | ticket | Shotef, team member (manager to assign someone else) |
 | `set_ticket_priority` | Set priority and the help-wanted flag | ticket | Shotef, team member |
 | `pass_ticket` | Hand a ticket to another team | ticket | Shotef, team member |
 | `create_topic` | Start a topic, optionally as a Q&A question | public | `NODEBB_ENABLE_WRITES` |
@@ -182,9 +182,11 @@ output what they could not see.
 | `nodebb-plugin-question-and-answer` | Accepted answers, the unsolved queue, `mark_solved` | The most-upvoted reply, labelled *not marked accepted*; the queue becomes topics without replies |
 | [Shotef](https://github.com/emotochat-droid/nodebb-shotef) | Triage stage, board, tickets, and the ticket tools | Triage is reported as unknown |
 
-Shotef needs its HTTP API (`/api/v3/plugins/shotef/tickets/…`). Earlier releases
-ignore API tokens, so the board looks empty; `forum_capabilities` warns when it
-sees one.
+The ticket tools need Shotef's HTTP API (`/api/v3/plugins/shotef/tickets/…`, see
+its README). On a build without it, `forum_capabilities` reports triage actions
+as absent and says why, and the ticket tools refuse before sending anything.
+Such builds also ignore API tokens: the board then reads as empty for a token,
+but works when the server signs in with `NODEBB_USERNAME` / `NODEBB_PASSWORD`.
 
 An unconfirmed reply is never presented as an accepted answer, and every refusal
 from the forum comes back with its reason and what to do about it.
@@ -227,3 +229,7 @@ resources, distilled from the Shotef plugin:
 
 They live in `resources/` as plain markdown. To add one, write the file and add
 an entry to `resources/index.json`.
+
+## License
+
+MIT

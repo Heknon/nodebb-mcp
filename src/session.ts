@@ -22,10 +22,12 @@
  *
  * Hence the design:
  *  - sign in lazily, once, shared by concurrent requests;
- *  - on a lost session, sign in again and retry the request once;
- *  - never retry a refused sign-in in this process, and remember the refusal in
- *    the session file for an hour so restarts with the same wrong password
- *    cannot lock the account;
+ *  - on signs of a lost session, ask the forum (`check`); sign in again only
+ *    when it says the session is gone, then retry the request once;
+ *  - hold a refused sign-in for an hour (in this process and in the session
+ *    file), so neither a long-running server nor restarts with the same wrong
+ *    password can lock the account; back off after a sign-in that failed for
+ *    any other reason, since every attempt counts toward the per-IP limit;
  *  - cache the session in a 0600 file so a new server process reuses it instead
  *    of logging in again (Claude starts a process per session; the per-IP limit
  *    is 20 an hour).
@@ -136,6 +138,12 @@ export class PasswordSession {
 	private refusalUntil = 0;
 	private loaded = false;
 	private loading: Promise<void> | undefined;
+	/** After a sign-in that failed for a transient reason: its error, held until `retryAt`. */
+	private lastFailure: NodeBBError | undefined;
+	private retryAt = 0;
+	private retryDelayMs = 0;
+	/** Whether the sign-in in progress has sent its login request (which the forum counts). */
+	private loginSent = false;
 	/** Bumped on every successful sign-in, so a stale "session lost" signal can be ignored. */
 	private generation = 0;
 	/** The uid the forum confirmed for this session; 0 until then. */
@@ -264,6 +272,7 @@ export class PasswordSession {
 	 */
 	async check(): Promise<boolean | undefined> {
 		if (!this.uid || !this.cookies.size) return false;
+		const generation = this.generation;
 		try {
 			const res = await fetch(`${this.opts.url}/api/config`, {
 				headers: { accept: 'application/json', 'user-agent': USER_AGENT, ...this.headers('GET') },
@@ -271,9 +280,22 @@ export class PasswordSession {
 			});
 			if (!res.ok) return undefined;
 			const config = await res.json() as Raw;
-			const honoured = Number(config.uid) === this.uid;
-			if (honoured) this.confirm();
-			return honoured;
+			// Only NodeBB's own config answers the question — a numeric uid (0 for a
+			// guest) and a CSRF token — not a maintenance page or a cached stub.
+			if (!/^\d+$/.test(String(config.uid ?? '')) || typeof config.csrf_token !== 'string') return undefined;
+			if (Number(config.uid) !== this.uid) return false;
+			// Still ours. Take its current CSRF token (a cached one can be stale) —
+			// unless a sign-in since then made this answer another session's.
+			if (generation === this.generation) {
+				this.confirm();
+				if (config.csrf_token !== this.csrf) {
+					this.csrf = config.csrf_token;
+					await this.save();
+					const state = this.exportState();
+					if (state) this.opts.onChange?.(state);
+				}
+			}
+			return true;
 		} catch {
 			return undefined;
 		}
@@ -285,30 +307,62 @@ export class PasswordSession {
 	 * person's access or spending a sign-in on that would be wrong. Sign in
 	 * again only when the forum confirms the session is gone — and not when a
 	 * sign-in already happened since the failing request was sent.
+	 *
+	 * Returns whether the session changed (a new sign-in, or a fresh CSRF
+	 * token), i.e. whether sending the failed request again can help.
 	 */
-	async renew(seenGeneration: number): Promise<void> {
+	async renew(seenGeneration: number): Promise<boolean> {
 		const refusal = this.heldRefusal();
 		if (refusal) throw refusal;
-		if (this.signingIn) return this.signingIn;
-		if (seenGeneration !== this.generation) return;
-		// Still honoured, or unknown: keep the session; the caller's retry reports the failure.
-		if (await this.check() !== false) return;
-		if (this.signingIn) return this.signingIn;
-		if (seenGeneration !== this.generation) return;
+		if (this.signingIn) {
+			await this.signingIn;
+			return true;
+		}
+		if (seenGeneration !== this.generation) return true;
+		const csrf = this.csrf;
+		const verdict = await this.check();
+		if (this.signingIn) {
+			await this.signingIn;
+			return true;
+		}
+		if (seenGeneration !== this.generation) return true;
+		// Still honoured, or the forum cannot say: keep the session.
+		if (verdict !== false) return this.csrf !== csrf;
 		if (this.opts.password === undefined) throw this.ended();
 		this.cookies.clear();
 		this.csrf = undefined;
 		this.uid = 0;
 		await this.signIn();
+		return true;
 	}
 
 	private signIn(): Promise<void> {
+		if (!this.signingIn && this.lastFailure && this.now() < this.retryAt) return Promise.reject(this.lastFailure);
 		this.signingIn ??= this.doSignIn()
+			.then(() => {
+				this.lastFailure = undefined;
+				this.retryDelayMs = 0;
+			})
 			.catch((err: unknown) => {
 				// Never leave step 1's anonymous session behind as if it were ours.
 				this.cookies.clear();
 				this.csrf = undefined;
 				this.uid = 0;
+				// A refusal is held by refuse(). Any other failure after the login was
+				// sent (a timeout, an error page) still counted toward the forum's per-IP
+				// limit, so do not send another on every tool call: back off, doubling.
+				if (!(err instanceof SignInError) && this.loginSent) {
+					this.retryDelayMs = Math.min(Math.max(this.retryDelayMs * 2, 15_000), 10 * 60_000);
+					this.retryAt = this.now() + this.retryDelayMs;
+					const cause = err instanceof NodeBBError ? err : undefined;
+					this.lastFailure = new NodeBBError(
+						cause?.kind ?? 'network',
+						`${err instanceof Error ? err.message : String(err)}. Not signing in again for ` +
+							`${Math.round(this.retryDelayMs / 1000)}s: the forum limits sign-ins per hour.`,
+						{ status: cause?.status, path: '/api/v3/utilities/login', cause: err },
+					);
+					throw this.lastFailure;
+				}
 				throw err;
 			})
 			.finally(() => {
@@ -321,6 +375,7 @@ export class PasswordSession {
 		this.cookies.clear();
 		this.csrf = undefined;
 		this.uid = 0;
+		this.loginSent = false;
 
 		// 1. An anonymous session and its CSRF token.
 		const config = await this.json(await this.send('GET', '/api/config'));
@@ -328,6 +383,7 @@ export class PasswordSession {
 
 		// 2. Log in.
 		this.logins += 1;
+		this.loginSent = true;
 		const res = await this.send('POST', '/api/v3/utilities/login', {
 			username: this.opts.username,
 			password: this.opts.password ?? '',

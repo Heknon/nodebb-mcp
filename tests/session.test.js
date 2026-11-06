@@ -6,13 +6,14 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { NodeBBClient } from '../dist/client.js';
 import { ConfigError, loadConfig } from '../dist/config.js';
 import { PasswordSession, SignInError } from '../dist/session.js';
+import { writePrivateJson } from '../dist/files.js';
 import { PASSWORDS, startFakeForum } from './fake-forum.js';
 import { connect } from './mcp-harness.js';
 
@@ -322,9 +323,11 @@ test('concurrent first callers read the session file once and do not sign in aga
 test('a sign-in that fails part-way leaves no anonymous session that passes for a signed-in one', async (t) => {
 	const forum = await startFakeForum();
 	t.after(() => forum.close());
-	const session = sessionFor(forum);
+	let clock = Date.now();
+	const session = sessionFor(forum, { now: () => clock });
 	forum.interceptNext('/api/v3/utilities/login', 502, { text: 'Bad Gateway' });
 	await assert.rejects(session.ensure(), /HTTP 502/);
+	clock += 16_000;
 	await session.ensure();
 	assert.equal(session.uid, 8, 'the next call signed in for real');
 	assert.equal(session.logins, 2);
@@ -347,15 +350,90 @@ test('a lock is held for an hour in a long-running process, then sign-in is trie
 	assert.equal(session.logins, 2);
 });
 
-test('a proxy\'s plain 403 on a write does not spend a sign-in when the forum still honours the session', async (t) => {
+test('a proxy\'s plain 403 on a write is reported, not answered with a sign-in or a second copy of the write', async (t) => {
 	const { forum, mcp } = await signedIn(t);
 	await mcp.call('forum_capabilities');
+	const notes = forum.notes[13]?.length ?? 0;
 	forum.interceptNext('/api/v3/plugins/shotef/tickets/13/notes', 403, { method: 'POST', text: 'Forbidden' });
+
+	const refused = await mcp.call('add_ticket_note', { tid: 13, body: 'past the proxy' });
+	assert.equal(refused.isError, true, refused.text);
+	assert.equal(forum.notes[13]?.length ?? 0, notes, 'the write was not sent again');
+	assert.equal(forum.loginAttempts.length, 1, 'no second sign-in');
 
 	const { text, isError } = await mcp.call('add_ticket_note', { tid: 13, body: 'past the proxy' });
 	assert.equal(isError, false, text);
-	assert.equal(forum.notes[13].at(-1).body, 'past the proxy');
-	assert.equal(forum.loginAttempts.length, 1, 'no second sign-in');
+	assert.equal(forum.loginAttempts.length, 1);
+});
+
+test('a stale cached CSRF token is replaced from the forum, without signing in again', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const sessionFile = await tempFile();
+	const env = { NODEBB_SESSION_FILE: sessionFile, NODEBB_SESSION_CHECK_MS: '0', ...maintainer };
+	const first = await connect(forum.url, env);
+	await first.call('forum_capabilities');
+	await first.close();
+	const cached = JSON.parse(await readFile(sessionFile, 'utf8'));
+	await writeFile(sessionFile, JSON.stringify({ ...cached, csrf: 'stale-token' }));
+
+	const mcp = await connect(forum.url, env);
+	t.after(() => mcp.close());
+	const { text, isError } = await mcp.call('add_ticket_note', { tid: 13, body: 'with a fresh token' });
+	assert.equal(isError, false, text);
+	assert.equal(forum.notes[13].at(-1).body, 'with a fresh token');
+	assert.equal(forum.loginAttempts.length, 1, 'the session was still good: no sign-in');
+	assert.notEqual(JSON.parse(await readFile(sessionFile, 'utf8')).csrf, 'stale-token', 'the cache holds the fresh token');
+});
+
+test('only NodeBB\'s own config can say a session ended — not a 200 maintenance stub', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const session = sessionFor(forum);
+	await session.ensure();
+	forum.interceptNext('/api/config', 200, { contentType: 'application/json', text: '{"status":"maintenance"}' });
+	assert.equal(await session.check(), undefined);
+	assert.equal(await session.check(), true);
+	forum.expireSessions();
+	assert.equal(await session.check(), false);
+});
+
+test('after a sign-in fails for a transient reason, the next attempts back off instead of spending the IP\'s logins', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	let clock = Date.now();
+	const session = sessionFor(forum, { now: () => clock });
+	forum.interceptNext('/api/v3/utilities/login', 504, { text: 'Gateway Timeout' });
+	await assert.rejects(session.ensure(), /HTTP 504/);
+	await assert.rejects(session.ensure(), /Not signing in again for 15s/);
+	await assert.rejects(session.ensure(), /Not signing in again/);
+	assert.equal(session.logins, 1, 'one login sent, not three');
+
+	clock += 15_001;
+	forum.interceptNext('/api/v3/utilities/login', 504, { text: 'Gateway Timeout' });
+	await assert.rejects(session.ensure(), /Not signing in again for 30s/, 'the wait doubles');
+	clock += 30_001;
+	await session.ensure();
+	assert.equal(session.uid, 8);
+	assert.equal(session.logins, 3);
+
+	// An unreachable forum is not a login spent: no back-off for that.
+	const offline = new PasswordSession({ url: 'http://127.0.0.1:9', username: 'm', password: 'password1', sessionFile: undefined, timeoutMs: 500 });
+	await assert.rejects(offline.ensure(), /Could not reach/);
+	await assert.rejects(offline.ensure(), /Could not reach/);
+});
+
+test('a burst of state-file writes ends with the newest content, written atomically', async () => {
+	const file = await tempFile();
+	const writes = [];
+	for (let i = 0; i < 50; i += 1) writes.push(writePrivateJson(file, { n: i }));
+	await Promise.all(writes);
+	assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { n: 49 });
+	assert.equal((await stat(file)).mode & 0o777, 0o600);
+	const dir = file.slice(0, file.lastIndexOf('/'));
+	assert.deepEqual((await readdir(dir)).filter(name => name.endsWith('.tmp')), []);
+	await writePrivateJson(file, { n: 'later' });
+	assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { n: 'later' });
 });
 
 test('a password-less (OAuth) session survives a proxy\'s 401, and still ends when the forum ends it', async (t) => {

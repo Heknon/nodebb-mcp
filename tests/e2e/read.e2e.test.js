@@ -218,7 +218,7 @@ test('get_triage_board: an unknown team is refused, not swapped for the default 
 	// Real Shotef answers an unknown ?team= with the viewer's default board, silently.
 	const maintainer = await as('maintainer');
 	const wrong = await maintainer.call('get_triage_board', { team: 'no-such-team' });
-	assert.match(wrong.text, /No triage team "no-such-team" is visible to e2e_maintainer\. Teams they can see: Support & Ops \(`e2e-support`\)/);
+	assert.match(wrong.text, /No triage team "no-such-team" is visible to e2e_maintainer\.\n\nVisible teams: Support & Ops \(e2e-support\)/);
 	const byName = await maintainer.call('get_triage_board', { team: 'support & ops' });
 	assert.match(byName.text, /# Triage board — Support & Ops \(e2e-support\)/);
 });

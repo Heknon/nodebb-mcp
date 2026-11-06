@@ -30,7 +30,7 @@ import type {
 
 import type { Config } from '../config.js';
 import { NodeBBError } from '../errors.js';
-import { PasswordSession, SignInError } from '../session.js';
+import { PasswordSession, type PasswordSessionOptions, SignInError } from '../session.js';
 import { USER_AGENT } from '../version.js';
 import { messagePage, signInPage } from './pages.js';
 import type { Grant, OAuthStore } from './store.js';
@@ -52,6 +52,25 @@ export function formActionSources(redirectUri: string): string {
 	} catch {
 		return "'self'";
 	}
+}
+
+/**
+ * The forum session a grant holds. It has no password: it can be used, checked
+ * and signed out, but not renewed — when the forum ends it, the grant ends.
+ */
+export function grantSession(
+	config: Config,
+	grant: Grant,
+	hooks: Pick<PasswordSessionOptions, 'onChange' | 'onEnded'> = {},
+): PasswordSession {
+	return new PasswordSession({
+		url: config.url,
+		username: grant.username,
+		initial: grant.session,
+		sessionFile: undefined,
+		timeoutMs: config.timeoutMs,
+		...hooks,
+	});
 }
 
 /** What a person is told when the forum refuses their sign-in. */
@@ -266,14 +285,7 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 		this.onGrantEnded(ended);
 		// Revoking access signs the forum session out too, so it leaves the
 		// person's sessions list rather than lingering.
-		const session = new PasswordSession({
-			url: this.config.url,
-			username: ended.username,
-			initial: ended.session,
-			sessionFile: undefined,
-			timeoutMs: this.config.timeoutMs,
-		});
-		await session.signOut();
+		await grantSession(this.config, ended).signOut();
 	}
 
 	/**
@@ -281,13 +293,6 @@ export class ForumOAuthProvider implements OAuthServerProvider {
 	 * grant: an unreachable forum, maintenance or an error page is not proof.
 	 */
 	private async forumSessionAlive(grant: Grant): Promise<boolean> {
-		const session = new PasswordSession({
-			url: this.config.url,
-			username: grant.username,
-			initial: grant.session,
-			sessionFile: undefined,
-			timeoutMs: this.config.timeoutMs,
-		});
-		return (await session.check()) !== false;
+		return (await grantSession(this.config, grant).check()) !== false;
 	}
 }

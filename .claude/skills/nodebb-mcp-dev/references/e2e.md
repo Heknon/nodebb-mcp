@@ -34,6 +34,7 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | `tests/e2e/session.e2e.test.js` | Password sign-in on the real forum: identity, cookie + CSRF writes (Shotef and core), session reuse across processes, renewal after a real revocation, a wrong password tried once. |
 | `tests/e2e/oauth.e2e.test.js` | The shared HTTP server, spawned as `node dist/index.js` with `NODEBB_MCP_HTTP_PORT`: discovery, two real people signing in (SDK OAuth client + scripted browser), isolation, a wrong password on the page, a session signed out on the forum ending only that person's access (and listed as `nodebb-mcp` there), `/revoke` logging NodeBB out, the state file holding no password or usable token. |
 | `tests/e2e/oauth-browser.e2e.test.js` | The sign-in page in headless Chromium (Playwright): a wrong password, then the right one, the redirect back to the client, and the client connecting. Catches what only a browser enforces (CSP, form-action resolution). Skips without Playwright. |
+| `tests/e2e/intake.e2e.test.js` | Shared-category tickets: listed in intake, opened by a member of either owning team (the second needs `?team=`), taken by a claim that names the team. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture
@@ -42,7 +43,11 @@ Users `e2e_reporter`, `e2e_helper`, `e2e_maintainer`, `e2e_outsider` (password i
 the fixture file). Categories **E2E Support & Help** (owned by team
 `e2e-support` "Support & Ops": admin, helper, maintainer; admin manages),
 **E2E General Discussion**, **E2E Staff Only** (read privileges rescinded from
-every default group). Topics — each chosen to trip one quirk:
+every default group). **E2E Shared Intake** is owned by two teams,
+`e2e-intake-a` (`e2e_intake`) and `e2e-intake-b` (`e2e_intake_b`), so every ticket
+in it starts in both intake lanes; the intake suite posts its own each run. No
+other fixture user is on those teams, so nobody else's default team changes.
+Topics — each chosen to trip one quirk:
 
 | Key | What it exercises |
 | --- | --- |
@@ -124,3 +129,21 @@ The pre-e2e build fails 13/22 read tests; that is the suite's baseline value.
    `e2e/forum.sh up` re-links it; then restart.
 5. Changed Shotef server code? `e2e/forum.sh restart`. Client assets don't
    matter to the API.
+
+## Against another Shotef build
+
+To see how the server behaves against Shotef as a forum actually runs it (say
+`main`, before a change is merged), point NodeBB's plugin link at another
+checkout, restart, run the suites, and put the link back:
+
+```bash
+git -C ../nodebb-shotef worktree add --detach /tmp/shotef-main origin/main
+ln -sfn /tmp/shotef-main /home/user/NodeBB/node_modules/nodebb-plugin-shotef && e2e/forum.sh restart
+node --test tests/e2e/read.e2e.test.js            # failures here show what users of that build get
+ln -sfn "$(cd ../nodebb-shotef && pwd)" /home/user/NodeBB/node_modules/nodebb-plugin-shotef && e2e/forum.sh restart
+```
+
+Server-side changes only need the restart; a build that differs in client code
+or templates also needs `./nodebb build`. The suites assume the current Shotef,
+so read the failures for what the server *tells* the user (it should name the
+missing piece, never a bare 404).

@@ -88,6 +88,9 @@ export interface Capabilities {
 
 export const AVAILABLE: Capability = { state: 'available' };
 
+const SHOTEF_TICKET_API = '`/api/v3/plugins/shotef/tickets/…`';
+const SHOTEF_UPDATE = 'Update Shotef to a build that includes its HTTP API (README → "HTTP API").';
+
 export function isUsable(capability: Capability): boolean {
 	return capability.state === 'available';
 }
@@ -177,7 +180,7 @@ export class CapabilityRegistry {
 			return result;
 		}
 
-		const [search, qna, shotef] = await Promise.all([
+		const [search, qna, { shotef, ticketApi }] = await Promise.all([
 			this.probeSearch(siteConfig, forum),
 			this.probeQna(siteConfig),
 			this.probeShotef(forum),
@@ -189,7 +192,7 @@ export class CapabilityRegistry {
 			qna,
 			shotef,
 			writes: this.writesCapability(forum),
-			triage: this.triageCapability(forum, shotef),
+			triage: this.triageCapability(forum, shotef, ticketApi),
 			probedAt: Date.now(),
 		};
 		this.cached = result;
@@ -214,9 +217,16 @@ export class CapabilityRegistry {
 		return AVAILABLE;
 	}
 
-	private triageCapability(forum: ForumInfo, shotef: Capability): Capability {
+	private triageCapability(forum: ForumInfo, shotef: Capability, ticketApi: boolean): Capability {
 		if (!isUsable(shotef)) {
 			return { state: shotef.state, reason: `Triage actions need the Shotef plugin. ${shotef.reason ?? ''}`.trim() };
+		}
+		if (!ticketApi) {
+			return {
+				state: 'absent',
+				reason: `This Shotef build has no HTTP ticket API (${SHOTEF_TICKET_API}), so tickets cannot be worked ` +
+					`from here; the board stays readable. ${SHOTEF_UPDATE}`,
+			};
 		}
 		if (!forum.authenticated) {
 			return {
@@ -342,23 +352,34 @@ export class CapabilityRegistry {
 		}
 	}
 
-	private async probeShotef(forum: ForumInfo): Promise<Capability> {
+	private async probeShotef(forum: ForumInfo): Promise<{ shotef: Capability; ticketApi: boolean }> {
+		const ns = this.config.shotefNamespace;
+		let shotef: Capability = AVAILABLE;
 		try {
-			const ping = await this.client.v3<Raw>(`/plugins/${this.config.shotefNamespace}/ping`);
+			const ping = await this.client.v3<Raw>(`/plugins/${ns}/ping`);
 			const seenUid = Number.parseInt(String(ping?.uid ?? 0), 10) || 0;
-			// Shotef releases before the setupApiRoute fix registered bare routes, which
-			// skip NodeBB's token authentication: every token caller is a guest there.
+			// Shotef builds before its HTTP API registered bare routes, which skip
+			// NodeBB's token authentication: every token caller is a guest there.
 			if (forum.authenticated && seenUid === 0) {
-				return {
+				shotef = {
 					state: 'available',
 					warning:
-						'This Shotef version ignores API tokens (its routes skip NodeBB\'s token authentication), ' +
-						'so the board and team-only details are invisible to this server. Upgrade the plugin.',
+						'This Shotef build ignores API tokens (its routes skip NodeBB\'s token authentication), so the ' +
+						'board and team-only details are invisible to this server. Sign in with NODEBB_USERNAME / ' +
+						`NODEBB_PASSWORD instead, which it honours. ${SHOTEF_UPDATE}`,
 				};
 			}
-			return AVAILABLE;
 		} catch (err) {
-			return classify(err, 'The Shotef triage plugin is not active on this forum.');
+			return { shotef: classify(err, 'The Shotef triage plugin is not active on this forum.'), ticketApi: false };
 		}
+		// The ticket routes arrived with the same change. Ticket 0 never exists: a
+		// build that has them refuses it (400); one that does not answers NodeBB's 404.
+		let ticketApi = true;
+		try {
+			await this.client.request(`/api/v3/plugins/${ns}/tickets/0`);
+		} catch (err) {
+			ticketApi = !(err instanceof NodeBBError && err.kind === 'not-found' && /Invalid API call/i.test(err.forumMessage ?? err.message));
+		}
+		return { shotef, ticketApi };
 	}
 }

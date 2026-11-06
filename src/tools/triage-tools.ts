@@ -12,7 +12,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { isUsable } from '../capabilities.js';
 import {
-	explainShotefError, getBoard, getTicket, getTriageStatus, searchTickets, type BoardCard, type TicketFilters,
+	explainShotefError, getBoard, openTicket, getTriageStatus, searchTickets, type BoardCard, type TicketFilters,
 } from '../integrations/shotef.js';
 import { getTopic } from '../nodebb/forum.js';
 import type { ToolContext } from './context.js';
@@ -29,6 +29,7 @@ function cardLine(item: BoardCard): string[] {
 		item.helpWanted ? 'help wanted' : '',
 		item.isQuestion ? (item.isSolved ? 'question: solved' : 'question: unsolved') : '',
 		item.ghost ? `passed on, now handled by ${item.handledBy ?? 'another team'}` : '',
+		item.lane === 'intake' && item.owners?.length ? `shared by ${item.owners.join(', ')}: a claim takes it for your team` : '',
 		item.openDays !== undefined ? `open ${item.openDays}d` : '',
 		item.noReplyDays !== undefined ? `reporter silent ${item.noReplyDays}d` : '',
 		item.closeReason === 'no_response' ? 'closed: no response' : '',
@@ -319,19 +320,22 @@ export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
 				if (!isUsable(caps.shotef)) {
 					return text(`No ticket is available.\n\n${caps.shotef.reason ?? ''}\n\n${UNAVAILABLE_ADVICE}`.trim());
 				}
-				const ticket = await getTicket(ctx.client, ctx.config, tid);
+				const ticket = await openTicket(ctx.client, ctx.config, caps, tid);
 				const lines = [
 					`# Ticket #${ticket.tid} ${ticket.title}`,
 					ticket.url,
 					'',
 					`**Status:** \`${ticket.status}\` (${stageLabel(ticket.publicStatus)})` +
 						(ticket.closeReason ? ` · closed: ${ticket.closeReason}` : ''),
-					`**Team:** ${ticket.teamName} (${ticket.team})`,
+					ticket.contended
+						? '**Team:** none yet — it is in the intake lane of the teams sharing its category. ' +
+							'Claiming it (assign_ticket, owner "me") takes it for your team; until then it is read-only.'
+						: `**Team:** ${ticket.teamName} (${ticket.team})`,
 					`**Owner:** ${ticket.claimedBy ?? 'unclaimed'} · **Priority:** ${ticket.priority ?? 'normal'}` +
 						(ticket.helpWanted ? ' · help wanted' : ''),
 					ticket.isQuestion ? `**Q&A:** ${ticket.isSolved ? 'solved' : 'unsolved question'}` : '',
 					ticket.category ? `**Category:** ${ticket.category}` : '',
-					ticket.readOnly ? '_Read-only for you: you are not on the handling team._' : '',
+					ticket.readOnly && !ticket.contended ? '_Read-only for you: you are not on the handling team._' : '',
 				].filter(Boolean);
 
 				if (ticket.description) lines.push('', '## Description', '', ticket.description);

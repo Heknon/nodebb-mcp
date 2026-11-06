@@ -31,6 +31,8 @@ const NODEBB_DIR = process.env.NODEBB_DIR || '/home/user/NodeBB';
 const FRESH = process.argv.includes('--fresh');
 const PASSWORD = 'E2e-pass-1234!';
 const TEAM_ID = 'e2e-support';
+/** Two teams sharing one category: its new tickets land in both teams' intake lane. */
+const INTAKE_TEAMS = ['e2e-intake-a', 'e2e-intake-b'];
 
 const log = (...args) => process.stderr.write(`[seed] ${args.join(' ')}\n`);
 
@@ -149,6 +151,47 @@ async function purge(fixture) {
 		await call(admin, 'DELETE', `/api/v3/categories/${cid}`).catch(err => log(`  (cid ${cid}: ${err.message})`));
 	}
 	await call(admin, 'DELETE', `/api/v3/plugins/shotef/teams/${TEAM_ID}`).catch(() => {});
+	for (const id of INTAKE_TEAMS) {
+		// eslint-disable-next-line no-await-in-loop
+		await call(admin, 'DELETE', `/api/v3/plugins/shotef/teams/${id}`).catch(() => {});
+	}
+	if (fixture.intake?.cid) {
+		await call(admin, 'DELETE', `/api/v3/categories/${fixture.intake.cid}`).catch(() => {});
+	}
+}
+
+/**
+ * A category owned by two teams, so each ticket in it starts contended: in both
+ * teams' intake lane until one takes it. `e2e_intake` is on team A only and on
+ * no other team (nobody else's visible teams change). Idempotent: reuses the
+ * category recorded in the fixture while it exists. Tests post their own
+ * tickets into it, since taking one ends its time in intake.
+ */
+async function ensureIntake(previous) {
+	const uids = {
+		a: await ensureUser('e2e_intake'),
+		b: await ensureUser('e2e_intake_b'),
+	};
+	let cid = previous?.cid;
+	if (cid) {
+		const exists = await call(admin, 'GET', `/api/v3/categories/${cid}`).then(() => true, () => false);
+		if (!exists) cid = undefined;
+	}
+	cid ??= await createCategory('E2E Shared Intake', 'Owned by two teams (shared-category intake)');
+	// Tickets the intake suite posted and an interrupted run left behind.
+	const { topics = [] } = await call(admin, 'GET', `/api/category/${cid}`);
+	for (const { tid } of topics) {
+		// eslint-disable-next-line no-await-in-loop
+		await call(admin, 'DELETE', `/api/v3/topics/${tid}`).catch(err => log(`  (purge tid ${tid}: ${err.message})`));
+	}
+	const [a, b] = INTAKE_TEAMS;
+	await call(admin, 'PUT', `/api/v3/plugins/shotef/teams/${a}`, {
+		name: 'Intake A', categories: [cid], members: [uids.a], managers: [uids.a], roster: [uids.a],
+	});
+	await call(admin, 'PUT', `/api/v3/plugins/shotef/teams/${b}`, {
+		name: 'Intake B', categories: [cid], members: [uids.b], managers: [uids.b], roster: [uids.b],
+	});
+	return { cid, teams: INTAKE_TEAMS, uid: uids.a, username: 'e2e_intake' };
 }
 
 /**
@@ -327,12 +370,16 @@ async function seed() {
 	if (existing && !FRESH) {
 		log(`fixture still intact on ${URL_BASE}; reusing ${FIXTURE_FILE} (pass --fresh to rebuild)`);
 		await applyTriageState(existing.topics, existing.uids);
+		const intake = await ensureIntake(existing.intake);
+		if (JSON.stringify(intake) !== JSON.stringify(existing.intake)) {
+			writeFileSync(FIXTURE_FILE, `${JSON.stringify({ ...existing, intake }, null, '\t')}\n`);
+		}
 		return;
 	}
 	MASTER = mintTokens([0])['0'];
 	await purge(existing ?? (existsSync(FIXTURE_FILE) ? JSON.parse(readFileSync(FIXTURE_FILE, 'utf8')) : undefined));
 
-	const fixture = await seed();
+	const fixture = { ...(await seed()), intake: await ensureIntake() };
 	writeFileSync(FIXTURE_FILE, `${JSON.stringify(fixture, null, '\t')}\n`);
 	log(`seeded ${Object.keys(fixture.topics).length} topics -> ${FIXTURE_FILE}`);
 })().catch((err) => {

@@ -137,6 +137,15 @@ const isParked = c => c.class === 'backlog' && c.publicStatus !== 'answered' && 
 const PUBLIC_LABELS = { received: 'Received', in_progress: 'In progress', answered: 'Awaiting your reply', closed: 'Closed' };
 
 const TEAM = { id: 'core', name: 'Core Support', members: [1, 8], managers: [1], categories: [3] };
+/**
+ * opts.intake: a second team, Ops (no fixture user is on it), shares the support
+ * category, so ticket 15 is contended — in both teams' intake lane, taken by
+ * neither. As observed on Shotef: the board's intake card carries
+ * `contended: true` and `owners`; GET /tickets/:tid works without ?team= only
+ * for the *first* owner's members (and calls that team the handling team);
+ * a claim must name the team it takes the ticket for.
+ */
+const OPS = { id: 'ops', name: 'Ops' };
 
 function seedTickets() {
 	return {
@@ -154,14 +163,22 @@ function seedTickets() {
  * @param {{search?:boolean,qna?:boolean,shotef?:boolean}} [opts.plugins]
  * @param {boolean} [opts.guestSearch] grant guests search:content (off, as in NodeBB)
  * @param {boolean} [opts.escapeTitles] emulate a forum that sends titles HTML-escaped
- * @param {boolean} [opts.shotefIgnoresTokens] emulate Shotef < the setupApiRoute fix
+ * @param {boolean} [opts.shotefIgnoresTokens] emulate a Shotef build from before its HTTP API: bare routes
+ *        that ignore API tokens, and no /tickets/… routes at all (NodeBB's 404 "Invalid API call")
  * @param {boolean} [opts.loginWithoutSession] password accepted but no session granted (e.g. 2FA pending)
+ * @param {boolean} [opts.intake] add a contended ticket (#15) shared with a second team (see OPS)
  * @param {number} [opts.loginDelayMs] hold each login response this long (to test requests racing a sign-in)
  */
 export async function startFakeForum(opts = {}) {
 	const plugins = { search: true, qna: true, shotef: true, ...(opts.plugins ?? {}) };
 	const TOPICS = seedTopics();
 	const tickets = seedTickets();
+	if (opts.intake) {
+		tickets[15] = {
+			tid: 15, title: 'SSO login loops back to the sign-in page', slug: '15/sso-loop', status: 'todo', priority: 'normal',
+			claimedBy: 0, contended: true, team: OPS.id, updatedAt: 1_700_400_000_000, createdAt: 1_700_400_000_000,
+		};
+	}
 	const notes = {};
 	const timeline = {};
 	let nextTid = 50;
@@ -598,8 +615,13 @@ export async function startFakeForum(opts = {}) {
 			if (!member) return v3(200, { noTeam: true, teams: [] });
 			const build = c => ({
 				key: c.key, label: c.label, class: c.class, publicStatus: c.publicStatus,
-				cards: Object.values(tickets).filter(t => t.status === c.key).map(boardCard),
+				cards: Object.values(tickets).filter(t => t.status === c.key && !t.contended).map(boardCard),
 			});
+			const intake = Object.values(tickets).filter(t => t.contended).map(t => ({
+				...boardCard(t),
+				contended: true,
+				owners: [OPS, { id: TEAM.id, name: TEAM.name }],
+			}));
 			const columns = COLUMNS.filter(c => !isParked(c)).map(build).map(c => ({ ...c, count: c.cards.length }));
 			const backlog = COLUMNS.filter(isParked).map(build).map(c => ({ ...c, count: c.cards.length }));
 			return v3(200, {
@@ -609,8 +631,8 @@ export async function startFakeForum(opts = {}) {
 				columns,
 				backlog,
 				backlogCount: backlog.reduce((n, c) => n + c.count, 0),
-				intake: [],
-				intakeCount: 0,
+				intake,
+				intakeCount: intake.length,
 				shotef: { uid: 8, username: 'maintainer' },
 				vacant: false,
 				isManager: TEAM.managers.includes(shotefUid),
@@ -619,7 +641,9 @@ export async function startFakeForum(opts = {}) {
 
 		const ticketMatch = path.match(/^\/api\/v3\/plugins\/shotef\/tickets\/(\d+)(\/[a-z-]+)?$/);
 		if (ticketMatch) {
+			if (opts.shotefIgnoresTokens) return notFound();
 			const tid = Number(ticketMatch[1]);
+			if (tid === 0) return v3(400, {}, 'Invalid Topic ID');
 			const action = ticketMatch[2] ?? '';
 			const ticket = tickets[tid];
 			if (!ticket) return v3(404, {}, 'This topic is not tracked by Shotef');
@@ -627,6 +651,26 @@ export async function startFakeForum(opts = {}) {
 			if (!member) return v3(403, {}, 'You are not a member of this team');
 			const audit = (entry) => { (timeline[tid] = timeline[tid] ?? []).push({ ts: Date.now(), actor: userOf(shotefUid).username, ...entry }); };
 			const topic = TOPICS[tid];
+
+			if (ticket.contended) {
+				const viewTeam = url.searchParams.get('team');
+				if (method === 'GET' && action === '') {
+					// Readable from your own team's intake: ?team=, or being on the first owner (ticket.team).
+					if (viewTeam !== TEAM.id && ticket.team !== TEAM.id) return v3(403, {}, 'You are not a member of this team');
+					return v3(200, {
+						tid, title: ticket.title, slug: ticket.slug, cid: 3, category: 'Support & Help',
+						handlingTeam: ticket.team, handlingTeamName: OPS.name, readOnly: true, contended: true,
+						status: ticket.status, publicStatus: 'received', closeReason: '', priority: ticket.priority,
+						helpWanted: false, isQuestion: false, isSolved: false, createdAt: ticket.createdAt, updatedAt: ticket.updatedAt,
+						claimedBy: null, timeline: timeline[tid] ?? [], notes: [],
+					});
+				}
+				const claiming = (action === '/claim' && method === 'PUT') || (action === '/assignee' && method === 'PUT');
+				if (!claiming) return v3(403, {}, 'You are not a member of this team');
+				if (body.teamId !== TEAM.id) return v3(403, {}, 'Your team doesn\'t own this ticket\'s category');
+				audit({ action: 'team_take', to: TEAM.id });
+				Object.assign(ticket, { contended: false, team: TEAM.id });
+			}
 
 			if (method === 'GET' && action === '') {
 				const qna = plugins.qna && topic && Number(topic.isQuestion);

@@ -5,6 +5,7 @@ import { CapabilityRegistry } from '../dist/capabilities.js';
 import { NodeBBClient } from '../dist/client.js';
 import { loadConfig } from '../dist/config.js';
 import { startFakeForum } from './fake-forum.js';
+import { connect } from './mcp-harness.js';
 
 function registryFor(url, env = {}) {
 	const config = loadConfig({ NODEBB_URL: url, ...env });
@@ -100,8 +101,9 @@ test('concurrent probes collapse into one sweep', async (t) => {
 	const [a, b, c] = await Promise.all([registry.get(), registry.get(), registry.get()]);
 	assert.equal(a.probedAt, b.probedAt);
 	assert.equal(b.probedAt, c.probedAt);
-	// One anonymous sweep is 3 calls: config (which also answers Q&A), search, ping.
-	assert.equal(forum.requests.length, 3, JSON.stringify(forum.requests.map(r => r.path)));
+	// One anonymous sweep is 4 calls: config (which also answers Q&A), search, Shotef's ping and its
+	// ticket-API check.
+	assert.equal(forum.requests.length, 4, JSON.stringify(forum.requests.map(r => r.path)));
 });
 
 test('invalidate forces the next get to re-probe', async (t) => {
@@ -159,7 +161,21 @@ test('a Shotef that ignores API tokens is flagged', async (t) => {
 
 	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'admin-token' }).registry.get();
 	assert.equal(caps.shotef.state, 'available');
-	assert.match(caps.shotef.warning, /ignores API tokens/);
+	assert.match(caps.shotef.warning, /ignores API tokens.*NODEBB_USERNAME/);
+	// Such builds also predate the ticket routes: triage actions are off, with the reason.
+	assert.equal(caps.triage.state, 'absent');
+	assert.match(caps.triage.reason, /no HTTP ticket API .* the board stays readable\. Update Shotef/);
+});
+
+test('without the ticket API, ticket actions are refused up front with the reason, not a bare 404', async (t) => {
+	const forum = await startFakeForum({ shotefIgnoresTokens: true });
+	const mcp = await connect(forum.url, { NODEBB_API_TOKEN: 'admin-token' });
+	t.after(async () => { await mcp.close(); await forum.close(); });
+	const { text, isError } = await mcp.call('add_ticket_note', { tid: 13, body: 'x' });
+	assert.equal(isError, true);
+	assert.match(text, /no HTTP ticket API/);
+	assert.doesNotMatch(text, /Invalid API call/);
+	assert.ok(!forum.requests.some(r => r.path.endsWith('/tickets/13/notes')), 'nothing was sent');
 });
 
 test('writes are off unless enabled, and need a real identity when they are', async (t) => {

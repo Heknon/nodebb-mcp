@@ -146,8 +146,11 @@ export class NodeBBClient {
 		// A password session can expire or be revoked. NodeBB does not say so with
 		// an error: reads quietly come back as a guest. Sign in again and retry once.
 		if (this.session && this.sessionLost(result, method)) {
-			await this.session.renew(result.generation);
-			result = await this.send(path, options);
+			const changed = await this.session.renew(result.generation);
+			// A read is safe to send again. A write only when the session changed (a new
+			// sign-in, a fresh CSRF token): otherwise the refusal stands, and repeating a
+			// write a proxy refused after the forum applied it would apply it twice.
+			if (changed || method === 'GET') result = await this.send(path, options);
 		}
 		if (this.session && result.ok && result.text.includes('"loggedIn":true')) this.session.confirm();
 		return this.interpret<T>(result, path, options);
