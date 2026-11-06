@@ -120,9 +120,9 @@ claude mcp add --transport http forum http://localhost:4567/api/mcp   # in a thr
   still be `claude/nodebb-mcp-plugin-resources-k8brz2`, the history `main`
   started from.) Don't push elsewhere without being asked; don't open PRs
   unless asked.
-- `main` needs a Shotef build with its HTTP API (`/api/v3/plugins/shotef/tickets/…`)
-  for the ticket tools; until that is on Shotef's `main` too, a forum running
-  Shotef `main` gets them reported as unavailable (see README → Plugins).
+- The ticket tools need a Shotef build with its HTTP API
+  (`/api/v3/plugins/shotef/tickets/…`, on Shotef's `main` since `d98424d`). A forum
+  on an older Shotef gets them reported as unavailable (see README → Plugins).
 - Commit author must be `noreply@anthropic.com`; no model ids in commits or PRs.
 - Cross-repo changes (e.g. a Shotef route this server needs) go to Shotef's own
   working branch, committed and pushed there, and are verified by this repo's
