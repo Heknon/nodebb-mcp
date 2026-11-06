@@ -21,13 +21,15 @@ npm install && npm run build
       "args": ["/path/to/nodebb-mcp/dist/index.js"],
       "env": {
         "NODEBB_URL": "https://forum.example.com",
-        "NODEBB_API_TOKEN": "your-token"
+        "NODEBB_USERNAME": "support-bot",
+        "NODEBB_PASSWORD": "…"
       }
     }
   }
 }
 ```
 
+The server signs in like a browser and keeps the session working on its own.
 Then call `forum_capabilities` to check who the forum says you are and which
 plugins are live.
 
@@ -82,18 +84,32 @@ drafts the reply into a note for a person to post).
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `NODEBB_URL` | required | Forum root, e.g. `https://forum.example.com` (a subpath is fine) |
-| `NODEBB_API_TOKEN` | — | API token (ACP → Settings → API Access). Without one the server is a guest: public content only, and no search |
-| `NODEBB_UID` | — | User to act as. Required with a master token; ignored with a user token |
+| `NODEBB_USERNAME`, `NODEBB_PASSWORD` | — | The account to sign in as. Without credentials the server is a guest: public content only, and no search |
+| `NODEBB_API_TOKEN` | — | Alternative to a password (ACP → Settings → API Access). Wins if both are set |
+| `NODEBB_UID` | — | User to act as. Required with a master token; ignored otherwise |
 | `NODEBB_ENABLE_WRITES` | off | `1` / `true` enables the public tools |
 | `NODEBB_TIMEOUT_MS` | `15000` | Per-request timeout |
 | `NODEBB_MAX_POSTS_PER_TOPIC` | `50` | Posts read per topic |
 | `NODEBB_CAPABILITY_TTL_MS` | `300000` | How long plugin detection is cached |
 | `NODEBB_SHOTEF_NAMESPACE` | `shotef` | Shotef's route prefix under `/api/v3/plugins/` |
+| `NODEBB_SESSION_FILE` | per-user cache file | Where the signed-in session is kept (`~/.cache/nodebb-mcp/`, owner-only); `off` keeps it in memory |
+| `NODEBB_SESSION_CHECK_MS` | `30000` | How often an idle session is re-checked before a Shotef or other Write API read |
 
-**Check your token.** NodeBB does not reject an invalid or revoked token; it
+**Signing in with a password.** The server keeps the session cookie, sends the
+CSRF token on writes, and signs in again by itself when the session expires or
+is revoked. NodeBB limits sign-ins (by default, 5 failures an hour lock the
+account; 20 sign-ins an hour from one IP lock the IP), so:
+
+- new server processes reuse the cached session instead of signing in again;
+- a wrong password is tried once, and remembered for an hour, so restarts can't
+  lock the account. Every tool then reports the forum's reason;
+- the password itself is never written anywhere.
+
+Two-factor authentication is not supported; use an API token for such accounts.
+
+**Check who you are.** NodeBB does not reject an invalid or revoked token; it
 quietly treats the caller as a guest. `forum_capabilities` shows the user the
-forum actually resolved and flags a token it ignored, or a master token without
-`NODEBB_UID`.
+forum actually resolved, and flags credentials it refused or ignored.
 
 ## Plugins
 

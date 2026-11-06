@@ -98,6 +98,13 @@ forum is reachable, so `npm test` stays green anywhere.
 
 ## Identity: verify, never assume
 
+Three modes (`client.authMode`): a username/password session (`src/session.ts`
+— the transparent default for users), an API token, or none. A token wins if
+both are set. In password mode the client signs in lazily (once, shared),
+renews a lost session and retries once, never retries a refused sign-in, and
+caches the session in a 0600 file so restarts don't count against NodeBB's
+login rate limits. See the reference for the observed login behaviour.
+
 NodeBB **does not reject an unknown bearer token** — it serves the request as a
 guest. `hasToken` means nothing; `caps.forum.authenticated` (from `/api/config`
 → `uid`) is the truth. A **master token** needs `_uid` on every call
@@ -111,7 +118,8 @@ API (`/api/v3/ping`) explains — `CapabilityRegistry.explainAuthFailure` asks i
 src/index.ts            stdio entry; logs to stderr only (stdout is the protocol)
 src/server.ts           McpServer + instructions
 src/config.ts           env → Config (NODEBB_URL required; NODEBB_ENABLE_WRITES opt-in, public writes only)
-src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid
+src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid, session retry
+src/session.ts          password sign-in: cookie jar, CSRF, renewal, refusal memory, session file
 src/capabilities.ts     probes + verified identity + writes/triage capabilities, TTL-cached
 src/nodebb/forum.ts     topics/posts/search/listings/core writes, normalized
 src/integrations/       qna.ts (answers, unsolved), shotef.ts (status, board, tickets, actions)

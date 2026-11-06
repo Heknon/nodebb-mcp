@@ -24,7 +24,7 @@ async function main(): Promise<void> {
 	} catch (err) {
 		if (err instanceof ConfigError) {
 			log(`configuration error: ${err.message}`);
-			log('Required: NODEBB_URL. Optional: NODEBB_API_TOKEN, NODEBB_UID, NODEBB_ENABLE_WRITES, NODEBB_TIMEOUT_MS.');
+			log('Required: NODEBB_URL. Sign in with NODEBB_USERNAME + NODEBB_PASSWORD, or NODEBB_API_TOKEN (+ NODEBB_UID).');
 			process.exit(78); // EX_CONFIG
 		}
 		throw err;
@@ -33,8 +33,14 @@ async function main(): Promise<void> {
 	const { server, capabilities } = await buildServer(config);
 
 	await server.connect(new StdioServerTransport());
-	log(`v${SERVER_VERSION} ready, serving ${config.url}${config.token ? ' (token configured)' : ' (anonymous)'}` +
+	const signIn = config.token
+		? 'API token'
+		: config.username ? `signing in as ${config.username}` : 'anonymous';
+	log(`v${SERVER_VERSION} ready, serving ${config.url} (${signIn})` +
 		`${config.enableWrites ? ', public writes enabled' : ', public writes off'}`);
+	if (config.token && config.username) {
+		log('NODEBB_API_TOKEN is set, so NODEBB_USERNAME / NODEBB_PASSWORD are ignored.');
+	}
 
 	// Warm the capability cache so the first tool call is not paying for the
 	// probe sweep. Failure here is not fatal: tools re-probe and report.

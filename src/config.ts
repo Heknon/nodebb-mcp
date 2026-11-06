@@ -5,11 +5,34 @@
  * server can run against a public forum with no credentials at all.
  */
 
+import { createHash } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+
 export interface Config {
 	/** Base URL of the forum, no trailing slash. May include a subdirectory mount. */
 	url: string;
-	/** NodeBB API token (ACP -> Settings -> API Access). Optional. */
+	/** NodeBB API token (ACP -> Settings -> API Access). Optional. Wins over a password. */
 	token: string | undefined;
+	/**
+	 * Sign in with a username and password instead of a token: the server logs
+	 * in like a browser would and keeps the session. Both or neither.
+	 */
+	username: string | undefined;
+	password: string | undefined;
+	/**
+	 * Where the signed-in session is cached between server processes, so a new
+	 * process reuses it instead of logging in again (NodeBB rate-limits logins
+	 * per account and per IP). `undefined` disables the cache.
+	 */
+	sessionFile: string | undefined;
+	/**
+	 * How long a password session counts as confirmed. Write API reads carry no
+	 * sign of who they were served to, so before one, a session not confirmed
+	 * within this window is re-checked via /api/config (and renewed if needed).
+	 */
+	sessionCheckMs: number;
 	/**
 	 * Acts-as uid. Required by NodeBB when the token is a *master* token; ignored
 	 * for user tokens. Sent as the `_uid` query parameter.
@@ -77,6 +100,20 @@ function boolFromEnv(env: NodeJS.ProcessEnv, name: string): boolean {
 	throw new ConfigError(`${name} must be true/false (or 1/0), got ${JSON.stringify(env[name])}`);
 }
 
+/**
+ * The session cache path: NODEBB_SESSION_FILE, or a per-forum, per-user file in
+ * the user's cache directory. `off` disables it.
+ */
+function sessionFileFromEnv(env: NodeJS.ProcessEnv, url: string, username: string | undefined): string | undefined {
+	if (!username) return undefined;
+	const raw = env.NODEBB_SESSION_FILE?.trim();
+	if (raw && ['off', 'none', 'false', '0'].includes(raw.toLowerCase())) return undefined;
+	if (raw) return resolve(raw);
+	const cacheHome = env.XDG_CACHE_HOME?.trim() || join(env.HOME?.trim() || homedir(), '.cache');
+	const key = createHash('sha256').update(`${url}\n${username}`).digest('hex').slice(0, 16);
+	return join(cacheHome, 'nodebb-mcp', `session-${key}.json`);
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 	const url = env.NODEBB_URL?.trim();
 	if (!url) {
@@ -87,11 +124,24 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
 
 	const token = env.NODEBB_API_TOKEN?.trim() || undefined;
 	const uid = env.NODEBB_UID?.trim() || undefined;
+	const username = env.NODEBB_USERNAME?.trim() || undefined;
+	// Passwords may legitimately start or end with spaces: do not trim.
+	const password = env.NODEBB_PASSWORD || undefined;
+	if (Boolean(username) !== Boolean(password)) {
+		throw new ConfigError(
+			`Set both NODEBB_USERNAME and NODEBB_PASSWORD to sign in with a password (only ${username ? 'NODEBB_USERNAME' : 'NODEBB_PASSWORD'} is set).`,
+		);
+	}
+	const base = normalizeUrl(url);
 
 	return {
-		url: normalizeUrl(url),
+		url: base,
 		token,
 		uid,
+		username,
+		password,
+		sessionFile: sessionFileFromEnv(env, base, username),
+		sessionCheckMs: intFromEnv(env, 'NODEBB_SESSION_CHECK_MS', 30_000, 0, 3_600_000),
 		timeoutMs: intFromEnv(env, 'NODEBB_TIMEOUT_MS', 15_000, 1_000, 120_000),
 		shotefNamespace: env.NODEBB_SHOTEF_NAMESPACE?.trim() || 'shotef',
 		capabilityTtlMs: intFromEnv(env, 'NODEBB_CAPABILITY_TTL_MS', 300_000, 0, 86_400_000),

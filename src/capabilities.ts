@@ -23,9 +23,13 @@
  *   shotef — GET /api/v3/plugins/<ns>/ping, the plugin's own liveness route.
  */
 
-import type { NodeBBClient } from './client.js';
+import type { AuthMode, NodeBBClient } from './client.js';
 import type { Config } from './config.js';
 import { NodeBBError } from './errors.js';
+import { SignInError } from './session.js';
+
+/** How to give the server an identity, for messages. */
+const SIGN_IN_ADVICE = 'set NODEBB_USERNAME and NODEBB_PASSWORD (or NODEBB_API_TOKEN)';
 
 export type CapabilityState = 'available' | 'absent' | 'forbidden' | 'unknown';
 
@@ -43,14 +47,14 @@ export interface ForumInfo {
 	/** Only some forums expose it; NodeBB v4 does not in /api/config. */
 	version?: string;
 	title?: string;
-	/** A token is configured (says nothing about whether it was accepted). */
-	tokenConfigured: boolean;
+	/** How the server signs in: an API token, a username/password, or not at all. */
+	credentials: AuthMode;
 	/** The forum accepted our credentials and acts as a real user. */
 	authenticated: boolean;
 	/** Acting uid as the forum sees it; 0 = guest. */
 	uid: number;
 	username?: string;
-	/** Set when a token is configured but the forum did not honour it. */
+	/** Set when credentials are configured but the forum did not honour them. */
 	authProblem?: string;
 	reason?: string;
 }
@@ -183,7 +187,7 @@ export class CapabilityRegistry {
 			return {
 				state: 'forbidden',
 				reason: forum.authProblem ??
-					'Writes need an identity: set NODEBB_API_TOKEN (and NODEBB_UID for a master token).',
+					`Writes need an identity: ${SIGN_IN_ADVICE}.`,
 			};
 		}
 		return AVAILABLE;
@@ -197,7 +201,7 @@ export class CapabilityRegistry {
 			return {
 				state: 'forbidden',
 				reason: forum.authProblem ??
-					'Triage actions need a team member\'s identity: set NODEBB_API_TOKEN (and NODEBB_UID for a master token).',
+					`Triage actions need a team member's identity: ${SIGN_IN_ADVICE}.`,
 			};
 		}
 		return AVAILABLE;
@@ -206,7 +210,7 @@ export class CapabilityRegistry {
 	private async probeForum(): Promise<{ forum: ForumInfo; siteConfig?: Raw }> {
 		const base = {
 			url: this.client.baseUrl,
-			tokenConfigured: this.client.hasToken,
+			credentials: this.client.authMode,
 			authenticated: false,
 			uid: 0,
 		};
@@ -215,9 +219,13 @@ export class CapabilityRegistry {
 		try {
 			siteConfig = await this.client.read<Raw>('/config');
 		} catch (err) {
+			// The forum answered, but refused the password: reachable, not signed in.
+			if (err instanceof SignInError) {
+				return { forum: { ...base, reachable: true, authProblem: `${err.message} ${err.hint}` } };
+			}
 			// A master token without _uid makes the Read API answer 500 with no
 			// explanation, while the Write API says exactly what is wrong. Ask it.
-			const explained = this.client.hasToken ? await this.explainAuthFailure() : undefined;
+			const explained = this.client.authMode === 'token' ? await this.explainAuthFailure() : undefined;
 			if (explained) {
 				return { forum: { ...base, reachable: true, authProblem: explained } };
 			}
@@ -240,11 +248,16 @@ export class CapabilityRegistry {
 			uid,
 		};
 
-		if (this.client.hasToken && uid === 0) {
+		if (this.client.authMode === 'token' && uid === 0) {
 			forum.authProblem =
 				'NODEBB_API_TOKEN was not accepted (invalid, revoked, or for a deleted user), so the forum is ' +
 				'treating every request as a guest. NodeBB does not reject a bad token — it silently ' +
 				'downgrades it. Generate a new token in ACP → Settings → API Access.';
+		}
+		if (this.client.authMode === 'password' && uid === 0) {
+			// The client already signed in again once; the forum still sees a guest.
+			forum.authProblem =
+				`Signed in as "${this.client.session?.username}", but the forum still treats this server as a guest.`;
 		}
 		if (uid > 0) forum.username = await this.lookupUsername(uid);
 		return { forum, siteConfig };
@@ -293,7 +306,7 @@ export class CapabilityRegistry {
 				forum.authenticated
 					? `Search is installed, but ${forum.username ?? `uid ${forum.uid}`} lacks the search:content privilege.`
 					: 'Search is installed, but guests lack the search:content privilege (the NodeBB default). ' +
-						'Set NODEBB_API_TOKEN to search as a user.',
+						`To search as a user, ${SIGN_IN_ADVICE}.`,
 			);
 		}
 	}

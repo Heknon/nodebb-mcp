@@ -45,14 +45,14 @@ test('startup log names the verified identity', opts, async () => {
 test('a bogus token is caught even though NodeBB serves it as a guest', opts, async () => {
 	const { text } = await (await as('not-a-real-token')).call('forum_capabilities');
 	assert.match(text, /Acting as:\*\* guest/);
-	assert.match(text, /Token problem:\*\* NODEBB_API_TOKEN was not accepted/);
+	assert.match(text, /Sign-in problem:\*\* NODEBB_API_TOKEN was not accepted/);
 	// NodeBB does not let guests search, and the reason must say so — not blame the token.
 	assert.match(text, /Full-text search \| ⚠️ forbidden \| Search is installed, but guests lack the search:content privilege/);
 });
 
 test('a master token without NODEBB_UID is explained (the Read API itself only says HTTP 500)', opts, async () => {
 	const { text } = await (await as('master')).call('forum_capabilities');
-	assert.match(text, /Token problem:\*\* NODEBB_API_TOKEN is a master token/);
+	assert.match(text, /Sign-in problem:\*\* NODEBB_API_TOKEN is a master token/);
 	assert.match(text, /set NODEBB_UID/);
 	assert.match(text, /master token was received without a corresponding `_uid`/);
 });

@@ -31,6 +31,38 @@ cache, so a NodeBB-context script can mint them behind a running forum
 
 **`/api/v3/users/:uid`** → `{ uid, username, … }`; used to name the acting user.
 
+## Password sign-in (cookie sessions)
+
+What `src/session.ts` is built on — all observed with curl on the live forum:
+
+- **Handshake.** An anonymous `GET /api/config` sets `express.sid` and returns
+  `csrf_token`. `POST /api/v3/utilities/login {username, password, remember:'on'}`
+  needs that cookie **and** `x-csrf-token`, else a plain-text `403 Forbidden`.
+  Success → 200 with the user object and a **new** `express.sid` (the session is
+  regenerated); the CSRF token stays the same. `remember: 'on'` makes the session
+  last `loginDays` (14).
+- **Writes** on a cookie session need `x-csrf-token`; without it → plain-text
+  `403 Forbidden`. GETs don't.
+- **Refusals** are `text/html` 403 bodies holding a raw key:
+  `[[error:invalid-login-credentials]]` (unknown users get the same — no
+  enumeration), `[[error:account-locked]]`, `[[error:ip-locked]]`.
+- **Rate limits** (`src/user/auth.js`): more than `loginAttempts` (5) failures in
+  an hour lock the account for `lockoutDuration` (60 min) — after that even the
+  right password is refused. Every attempt, successful or not, also counts
+  toward `ipLoginAttempts` (20) per IP per hour. A password **shorter than 6** is
+  rejected before anything is counted — a probe with "nope" proves nothing.
+- **Expiry is silent.** A revoked or expired session is served as a guest; no
+  error. Read API page payloads carry `loggedIn`/`loggedInUser` (and a fresh
+  `Set-Cookie`), so they reveal it. Write API GETs (Shotef's board, `/posts/:pid/…`)
+  carry **no signal at all** — not even a cookie — and quietly return guest data
+  (`{ noTeam: true }`). Writes fail CSRF; some routes 401. Hence: renew on
+  `loggedIn: false` / 401 / CSRF-403, and re-confirm a session older than
+  `NODEBB_SESSION_CHECK_MS` before a Write API read.
+- **Revoking** a session (tests): `GET /api/user/<slug>/sessions` lists them,
+  `DELETE /api/v3/users/:uid/sessions/:uuid` revokes (self or admin).
+- A bearer-token request also creates a server session (`finishLogin`), so a
+  user's session list includes token traffic.
+
 ## Config (`/api/config`)
 
 - **No `version` field** — NodeBB v4 never exposes it there. Don't print one.

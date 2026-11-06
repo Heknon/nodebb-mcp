@@ -27,8 +27,17 @@
  *    cards[]}], backlog:[…], intake:[…] }, or { noTeam:true } for a non-member.
  *    Ticket actions answer translated English errors with real status codes.
  *  - A guest write fails CSRF with a plain-text 403 "Forbidden".
+ *  - Password sign-in: GET /api/config issues an `express.sid` cookie and a
+ *    csrf_token; POST /api/v3/utilities/login needs both (else plain 403
+ *    "Forbidden"), regenerates the session id and keeps the token. Refusals are
+ *    text/html 403 bodies with raw keys (invalid-login-credentials, also for an
+ *    unknown user; account-locked after 5 counted failures). A password shorter
+ *    than 6 is refused *before* the attempt is counted. Cookie writes need
+ *    `x-csrf-token`. Page payloads carry `loggedIn` / `loggedInUser`; an expired
+ *    session is silently a guest.
  */
 
+import { randomBytes } from 'node:crypto';
 import http from 'node:http';
 
 const USERS = {
@@ -39,6 +48,14 @@ const USERS = {
 	7: { uid: 7, username: 'helper', userslug: 'helper' },
 	8: { uid: 8, username: 'maintainer', userslug: 'maintainer' },
 	9: { uid: 9, username: 'outsider', userslug: 'outsider' },
+};
+
+/** Account passwords for the session tests (at least 6 characters, as NodeBB requires). */
+export const PASSWORDS = {
+	1: 'admin-pass-1',
+	5: 'reporter-pass-1',
+	8: 'maintainer-pass-1',
+	9: 'outsider-pass-1',
 };
 
 export const TOKENS = {
@@ -138,6 +155,7 @@ function seedTickets() {
  * @param {boolean} [opts.guestSearch] grant guests search:content (off, as in NodeBB)
  * @param {boolean} [opts.escapeTitles] emulate a forum that sends titles HTML-escaped
  * @param {boolean} [opts.shotefIgnoresTokens] emulate Shotef < the setupApiRoute fix
+ * @param {boolean} [opts.loginWithoutSession] password accepted but no session granted (e.g. 2FA pending)
  */
 export async function startFakeForum(opts = {}) {
 	const plugins = { search: true, qna: true, shotef: true, ...(opts.plugins ?? {}) };
@@ -147,6 +165,13 @@ export async function startFakeForum(opts = {}) {
 	const timeline = {};
 	let nextTid = 50;
 	let nextPid = 500;
+	/** sid -> { uid, csrf } */
+	const sessions = new Map();
+	/** Every counted login attempt, in order: { username, ok } */
+	const loginAttempts = [];
+	const failures = {};
+	const locked = new Set();
+	const newSid = () => randomBytes(12).toString('hex');
 	/** @type {{method:string,path:string,query:object,auth:string|undefined,body:any,uid:number}[]} */
 	const requests = [];
 
@@ -284,17 +309,76 @@ export async function startFakeForum(opts = {}) {
 			}
 		}
 		// An unrecognised token falls through as a guest — NodeBB does not reject it.
-		requests.push({ method, path, query: Object.fromEntries(url.searchParams), auth: header || undefined, body, uid });
+		const viaToken = Boolean(token && token in TOKENS);
+
+		// Cookie session (express-session); an unknown or expired sid is a guest.
+		const cookies = Object.fromEntries((req.headers.cookie ?? '').split(';')
+			.map(part => part.trim()).filter(Boolean)
+			.map((part) => { const at = part.indexOf('='); return [part.slice(0, at), part.slice(at + 1)]; }));
+		const sid = cookies['express.sid'];
+		let session = sid ? sessions.get(sid) : undefined;
+		if (!viaToken && session) uid = session.uid;
+
+		requests.push({
+			method, path, query: Object.fromEntries(url.searchParams), auth: header || undefined, body, uid,
+			cookie: Boolean(sid), csrf: req.headers['x-csrf-token'],
+		});
 
 		const isWrite = method !== 'GET';
-		if (isWrite && uid === 0 && path.startsWith('/api/v3')) {
-			// No session and no valid token: the CSRF check fails before any route runs.
-			res.writeHead(403, { 'content-type': 'text/plain' });
-			return res.end('Forbidden');
+		if (isWrite && path.startsWith('/api/v3') && !viaToken) {
+			// Cookie (or no) auth: csrf-sync wants the session's token, before any route runs.
+			if (!session || req.headers['x-csrf-token'] !== session.csrf) {
+				res.writeHead(403, { 'content-type': 'text/plain' });
+				return res.end('Forbidden');
+			}
+		}
+
+		/** A page payload: NodeBB adds who it was rendered for. */
+		const page = payload => json(200, { ...payload, loggedIn: uid > 0, loggedInUser: uid > 0 ? userOf(uid) : { uid: 0 } });
+
+		if (path === '/api/v3/utilities/login' && method === 'POST') {
+			const html = (status, text) => {
+				res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
+				res.end(text);
+			};
+			const name = String(body.username ?? '');
+			const password = String(body.password ?? '');
+			// NodeBB rejects a too-short password before it counts the attempt.
+			if (password.length < 6) return html(403, '[[error:invalid-login-credentials]]');
+			const account = Object.values(USERS).find(u => u.username === name);
+			const key = account ? account.uid : 'dummy';
+			if (locked.has(key)) return html(403, '[[error:account-locked]]');
+			failures[key] = (failures[key] ?? 0) + 1;
+			if (failures[key] > 5) {
+				locked.add(key);
+				loginAttempts.push({ username: name, ok: false });
+				return html(403, '[[error:account-locked]]');
+			}
+			const ok = Boolean(account) && PASSWORDS[account.uid] === password;
+			loginAttempts.push({ username: name, ok });
+			if (!ok) return html(403, '[[error:invalid-login-credentials]]');
+			failures[key] = 0;
+			if (!opts.loginWithoutSession) {
+				// Login regenerates the session id and keeps the CSRF token.
+				sessions.delete(sid);
+				const fresh = newSid();
+				sessions.set(fresh, { uid: account.uid, csrf: session.csrf });
+				res.setHeader('set-cookie', `express.sid=${fresh}; Path=/; HttpOnly; SameSite=Lax`);
+			}
+			return v3(200, { ...userOf(account.uid), 'email:confirmed': 0 });
 		}
 
 		if (path === '/api/config') {
-			const config = { siteTitle: 'Fake Forum', relative_path: '', uid, loggedIn: uid > 0, searchEnabled: plugins.search, csrf_token: 'x' };
+			if (!viaToken && !session) {
+				const fresh = newSid();
+				session = { uid: 0, csrf: randomBytes(16).toString('hex') };
+				sessions.set(fresh, session);
+				res.setHeader('set-cookie', `express.sid=${fresh}; Path=/; Expires=${new Date(Date.now() + 864e5).toUTCString()}; HttpOnly; SameSite=Lax`);
+			}
+			const config = {
+				siteTitle: 'Fake Forum', relative_path: '', uid, loggedIn: uid > 0, searchEnabled: plugins.search,
+				csrf_token: session?.csrf ?? 'x',
+			};
 			if (plugins.qna) config['question-and-answer'] = { forceQuestions: 'off' };
 			return json(200, config);
 		}
@@ -335,7 +419,7 @@ export async function startFakeForum(opts = {}) {
 		}
 
 		if (path === '/api/categories') {
-			return json(200, {
+			return page({
 				categories: [
 					{ cid: 1, name: 'General', slug: '1/general', description: 'Anything', descriptionParsed: '<p>Anything</p>', topic_count: 20, post_count: 90, children: [] },
 					{ cid: 3, name: 'Support & Help', slug: '3/support', description: 'Help & questions', descriptionParsed: '<p>Help &amp; questions</p>', topic_count: 44, post_count: 310, children: [] },
@@ -344,8 +428,8 @@ export async function startFakeForum(opts = {}) {
 		}
 
 		if (path === '/api/recent' || path === '/api/popular' || path === '/api/top') {
-			const page = Number(url.searchParams.get('page') ?? 1);
-			return json(200, { topics: page === 1 ? Object.values(TOPICS).map(summaryOf) : [] });
+			const pageNo = Number(url.searchParams.get('page') ?? 1);
+			return page({ topics: pageNo === 1 ? Object.values(TOPICS).map(summaryOf) : [] });
 		}
 
 		if (path === '/api/unsolved' || path === '/api/solved') {
@@ -354,20 +438,20 @@ export async function startFakeForum(opts = {}) {
 			const list = Object.values(TOPICS)
 				.filter(t => Number(t.isQuestion) === 1 && (Number(t.isSolved) === 1) === wantSolved)
 				.map(summaryOf);
-			return json(200, { topics: list });
+			return page({ topics: list });
 		}
 
 		const topicMatch = path.match(/^\/api\/topic\/(\d+)/);
 		if (topicMatch) {
 			const topic = TOPICS[Number(topicMatch[1])];
 			if (!topic) return json(404, { status: { code: 'not-found', message: '[[error:no-topic]]' } });
-			return json(200, topicPayload(topic));
+			return page(topicPayload(topic));
 		}
 
 		const catMatch = path.match(/^\/api\/category\/(\d+)/);
 		if (catMatch) {
 			const cid = Number(catMatch[1]);
-			return json(200, { cid, topics: Object.values(TOPICS).filter(t => t.cid === cid).map(summaryOf) });
+			return page({ cid, topics: Object.values(TOPICS).filter(t => t.cid === cid).map(summaryOf) });
 		}
 
 		// --- core Write API ----------------------------------------------------
@@ -615,6 +699,10 @@ export async function startFakeForum(opts = {}) {
 		topics: TOPICS,
 		tickets,
 		notes,
+		loginAttempts,
+		/** Expire every session, as a server-side TTL or a revocation would. */
+		expireSessions() { sessions.clear(); },
+		lockAccount(uid) { locked.add(uid); },
 		async close() {
 			await new Promise((resolve) => server.close(resolve));
 		},

@@ -31,6 +31,7 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | `tests/e2e/harness.js` | `e2e({ needs })` → `{ fixture, opts }` (skip reason when the forum is absent or in the wrong plugin state, asked of the forum itself); `spawnMcp(fixture, { as, env })`; `eventually()`; `grabId()`. |
 | `tests/e2e/read.e2e.test.js` | Read tools as admin / team member / outsider / guest / bogus token / master ± `NODEBB_UID`. |
 | `tests/e2e/write.e2e.test.js` | One ticket's whole life: the reporter, the team member *without* the writes flag (all ticket work), and the same member *with* it (public reply, accepting the answer), as separate processes. Per-run marker in titles so reruns never collide. |
+| `tests/e2e/session.e2e.test.js` | Password sign-in on the real forum: identity, cookie + CSRF writes (Shotef and core), session reuse across processes, renewal after a real revocation, a wrong password tried once. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture
@@ -72,6 +73,18 @@ test('…', opts, async () => {
 - Search indexing and caches are asynchronous — wrap such reads in `eventually()`.
 - A new topic/state you need belongs in `seed.mjs`; bump nothing — the fixture is
   rebuilt with `--fresh`.
+
+### Identities
+
+`spawnMcp(fx, { as })`: `'admin' | 'maintainer' | 'outsider' | 'master' | 'anon'`
+or a literal token; `{ username, password }` signs in with a password
+(`fx.password` is every `e2e_*` user's). Give password servers their own
+`NODEBB_SESSION_FILE` in a temp dir.
+
+**Trap: the harness sets `NODEBB_CAPABILITY_TTL_MS=0`**, so every tool call
+re-probes `/api/config` — which itself notices a dead password session and
+renews it. A session-expiry test that keeps that default passes for the wrong
+reason; set the TTL high (as in production) to test the mechanism you mean.
 
 ## Looking at raw payloads first
 

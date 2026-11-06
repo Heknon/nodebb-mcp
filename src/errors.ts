@@ -42,7 +42,8 @@ export class NodeBBError extends Error {
 			case 'timeout':
 				return 'The forum did not respond in time; raise NODEBB_TIMEOUT_MS or retry.';
 			case 'auth':
-				return 'Set NODEBB_API_TOKEN (ACP -> Settings -> API Access). If it is a master token, also set NODEBB_UID.';
+				return 'Sign the server in: set NODEBB_USERNAME and NODEBB_PASSWORD, or NODEBB_API_TOKEN ' +
+					'(ACP -> Settings -> API Access; a master token also needs NODEBB_UID).';
 			case 'not-found':
 				return 'The item does not exist, or is not visible to this token.';
 			case 'unavailable':

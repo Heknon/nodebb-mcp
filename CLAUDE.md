@@ -61,6 +61,11 @@ Tokens in the fixture: `master` (uid 0 — needs `_uid`), `admin`, `maintainer`
 (team member, not manager), `outsider` (no team). Mint more with
 `NODEBB_DIR=/home/user/NodeBB node e2e/mint-tokens.cjs <uid…>`.
 
+Passwords: every `e2e_*` user's is `fixture.password`; `admin` is `Test1234!`.
+`e2e_wrongpass` exists only to fail sign-ins against. The seed raises
+`ipLoginAttempts` on this test forum (NodeBB locks an IP after 20 sign-ins an
+hour, and e2e runs sign in repeatedly from 127.0.0.1).
+
 ## 4. Traps (each one cost time here)
 
 - **Redis is not a service.** It may be down at session start. Never start it
@@ -81,6 +86,10 @@ Tokens in the fixture: `master` (uid 0 — needs `_uid`), `admin`, `maintainer`
   Redis directly, restart.
 - **A bad token doesn't fail** — NodeBB serves it as a guest. If results look
   thin, check `forum_capabilities` → "Acting as".
+- **Locked out while probing logins?** NodeBB locks an account after 5 failed
+  sign-ins (60 min) and an IP after too many sign-ins. On this dev forum only:
+  `redis-cli del lockout:<uid> loginAttempts:<uid> loginAttempts:ip:127.0.0.1`.
+  Probe with passwords of 6+ characters — shorter ones are rejected uncounted.
 
 ## 5. Git
 

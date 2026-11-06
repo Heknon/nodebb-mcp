@@ -46,7 +46,7 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 				lines.push(`**Acting as:** ${caps.forum.authenticated
 					? `${caps.forum.username ?? 'unknown user'} (uid ${caps.forum.uid}) — verified by the forum`
 					: 'guest — only publicly readable content is visible'}`);
-				if (caps.forum.authProblem) lines.push('', `❌ **Token problem:** ${caps.forum.authProblem}`);
+				if (caps.forum.authProblem) lines.push('', `❌ **Sign-in problem:** ${caps.forum.authProblem}`);
 				lines.push(
 					'',
 					'| Feature | State | Detail |',

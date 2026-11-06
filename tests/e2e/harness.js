@@ -84,8 +84,9 @@ export async function e2e({ needs = 'full' } = {}) {
  *
  * @param {object} fixture
  * @param {object} opts
- * @param {'admin'|'maintainer'|'outsider'|'master'|'anon'|string} [opts.as] which identity's token to use
- *        ('anon' = no token; any other string is used as a literal token)
+ * @param {'admin'|'maintainer'|'outsider'|'master'|'anon'|string|{username:string,password:string}} [opts.as]
+ *        which identity's token to use ('anon' = none; another string is a literal token),
+ *        or `{ username, password }` to sign in with a password instead
  * @param {Record<string,string>} [opts.env] extra environment
  */
 export async function spawnMcp(fixture, { as = 'admin', env = {} } = {}) {
@@ -96,7 +97,12 @@ export async function spawnMcp(fixture, { as = 'admin', env = {} } = {}) {
 		NODEBB_CAPABILITY_TTL_MS: '0',
 		...env,
 	};
-	if (as !== 'anon') childEnv.NODEBB_API_TOKEN = fixture.tokens[as] ?? as;
+	if (typeof as === 'object') {
+		childEnv.NODEBB_USERNAME = as.username;
+		childEnv.NODEBB_PASSWORD = as.password;
+	} else if (as !== 'anon') {
+		childEnv.NODEBB_API_TOKEN = fixture.tokens[as] ?? as;
+	}
 
 	const transport = new StdioClientTransport({ command: process.execPath, args: [SERVER], env: childEnv, stderr: 'pipe' });
 	const stderr = [];

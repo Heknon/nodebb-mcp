@@ -227,7 +227,8 @@ export async function getBoard(
 			available: true,
 			reason: capabilities.forum.authenticated
 				? `${capabilities.forum.username ?? `uid ${capabilities.forum.uid}`} is not a member of any triage team, so no board is visible.`
-				: 'No board is visible to a guest. Set NODEBB_API_TOKEN to a team member\'s token.',
+				: 'No board is visible to a guest. Sign the server in as a team member ' +
+					'(NODEBB_USERNAME and NODEBB_PASSWORD, or NODEBB_API_TOKEN).',
 		};
 	}
 

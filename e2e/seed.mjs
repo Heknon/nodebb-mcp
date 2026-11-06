@@ -151,16 +151,28 @@ async function purge(fixture) {
 	await call(admin, 'DELETE', `/api/v3/plugins/shotef/teams/${TEAM_ID}`).catch(() => {});
 }
 
-async function seed() {
-	// --- forum settings that would otherwise stall scripted posting ---------
+/**
+ * Forum state every run needs, applied even when the fixture is reused:
+ *  - settings that would otherwise stall scripted posting;
+ *  - a high per-IP login limit. NodeBB locks an IP after `ipLoginAttempts` (20)
+ *    logins an hour — successful ones included — and every e2e run signs in a
+ *    few times from 127.0.0.1. Test forum only: production keeps the default;
+ *  - `e2e_wrongpass`, the account the wrong-password test fails against, so no
+ *    fixture user is ever pushed toward NodeBB's account lockout.
+ */
+async function ensureBaseline() {
 	for (const [key, value] of [
 		['postQueue', 0], ['postDelay', 0], ['initialPostDelay', 0], ['newbiePostDelay', 0],
 		['newbieReputationThreshold', 0], ['groupsExemptFromPostQueue', '["registered-users"]'],
+		['ipLoginAttempts', 10000],
 	]) {
 		// eslint-disable-next-line no-await-in-loop
 		await setting(key, value).catch(err => log(`  (setting ${key}: ${err.message})`));
 	}
+	await ensureUser('e2e_wrongpass');
+}
 
+async function seed() {
 	// --- users --------------------------------------------------------------
 	const uids = { admin };
 	for (const name of ['e2e_reporter', 'e2e_helper', 'e2e_maintainer', 'e2e_outsider']) {
@@ -292,6 +304,7 @@ async function seed() {
 
 (async () => {
 	MASTER = mintTokens([0])['0'];
+	await ensureBaseline();
 
 	const existing = await readFixture();
 	if (existing && !FRESH) {

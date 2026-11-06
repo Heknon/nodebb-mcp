@@ -123,7 +123,7 @@ test('a token the forum does not recognise is caught, though NodeBB never reject
 	const caps = await registryFor(forum.url, { NODEBB_API_TOKEN: 'wrong-token' }).registry.get();
 	// NodeBB serves the request as a guest, so the forum is perfectly reachable…
 	assert.equal(caps.forum.reachable, true);
-	assert.equal(caps.forum.tokenConfigured, true);
+	assert.equal(caps.forum.credentials, 'token');
 	// …but we must not claim to be authenticated.
 	assert.equal(caps.forum.authenticated, false);
 	assert.equal(caps.forum.uid, 0);
