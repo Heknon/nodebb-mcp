@@ -243,3 +243,45 @@ test('documentation resources are served from the installed package', opts, asyn
 	const gotchas = await client.readResource({ uri: 'nodebb://plugin-dev/gotchas' });
 	assert.match(gotchas.contents[0].text, /double-escape/i);
 });
+
+test('list_recent_topics: a category\'s recent and popular topics, with ticket stages', opts, async () => {
+	const recent = await (await as('admin')).call('list_recent_topics', { cid: fx.cids.support, limit: 50 });
+	assert.match(recent.text, new RegExp(`# Topics \\(recent in category ${fx.cids.support}\\)`));
+	assert.match(recent.text, new RegExp(`#${T().symlink.tid} Plugin symlink disappears`));
+	assert.ok(!recent.text.includes(`#${T().welcome.tid} Welcome`), 'other categories are filtered out');
+	assert.match(recent.text, /Triage: In progress/);
+
+	const popular = await (await as('admin')).call('list_recent_topics', { source: 'popular', cid: fx.cids.general, term: 'monthly' });
+	assert.match(popular.text, /# Topics \(popular monthly in category/);
+	assert.match(popular.text, new RegExp(`#${T().welcome.tid} Welcome to the forum`));
+	assert.ok(!popular.text.includes('Triage:'), 'an unowned category has no tickets');
+});
+
+test('search_tickets: the real boards, filtered — open, backlog, mine, closed', opts, async () => {
+	const member = await as('maintainer');
+	const open = await member.call('search_tickets', { limit: 100 });
+	assert.match(open.text, /_Searched: Support & Ops \(e2e-support\)\._/);
+	assert.match(open.text, new RegExp(`#${T().symlink.tid} Plugin symlink disappears after npm install\\*\\*\\n  Support & Ops · In work \`in_work\` \\(active\\) · priority: high · claimed by e2e_maintainer`));
+	assert.match(open.text, new RegExp(`#${T().images.tid} Can't see uploaded images in posts\\*\\*\\n  Support & Ops · Blocked \`blocked\` \\(backlog\\)`));
+	assert.ok(!open.text.includes(`#${T().redis.tid} Redis`), 'closed tickets are not open');
+
+	const backlog = await member.call('search_tickets', { lane: 'backlog', limit: 100 });
+	assert.match(backlog.text, new RegExp(`#${T().images.tid} `));
+	assert.ok(!backlog.text.includes(`#${T().symlink.tid} `));
+
+	const mine = await member.call('search_tickets', { owner: 'me', query: 'symlink' });
+	assert.match(mine.text, /# 1 ticket — "symlink" · lane: open · owner: me/);
+
+	const closed = await member.call('search_tickets', { lane: 'closed', query: 'redis connection' });
+	assert.match(closed.text, new RegExp(`#${T().redis.tid} Redis connection refused`));
+
+	const outsider = await (await as('outsider')).call('search_tickets');
+	assert.match(outsider.text, /e2e_outsider is not a member of any triage team/);
+});
+
+test('search_forum and find_answers flag hits that already have a ticket', opts, async () => {
+	const search = await (await as('admin')).call('search_forum', { query: 'ECONNREFUSED' });
+	assert.match(search.text, new RegExp(`#${T().redis.tid} Redis[\\s\\S]*Triage: Closed`));
+	const answers = await (await as('admin')).call('find_answers', { question: 'nodebb redis connection refused after upgrading' });
+	assert.match(answers.text, /Source: accepted answer[\s\S]*Triage: Closed/);
+});

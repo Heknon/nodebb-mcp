@@ -46,17 +46,18 @@ What a tool may change decides when it is available:
 | Tool | Does | Changes | Needs |
 | --- | --- | --- | --- |
 | `forum_capabilities` | Who you are on the forum, which plugins are live, what is missing | nothing | — |
-| `find_answers` | Topics that already answer a question, with the answer from each, labelled accepted or merely upvoted | nothing | — |
+| `find_answers` | Topics that already answer a question, with the answer from each (labelled accepted or merely upvoted) and its ticket stage | nothing | — |
 | `investigate_issue` | Existing answers, still-open reports, triage state, and next steps for a problem report | nothing | — |
-| `search_forum` | Full-text search with snippets | nothing | a search plugin and a token (otherwise a recent-titles scan) |
+| `search_forum` | Full-text search with snippets, flagging hits that have a ticket | nothing | a search plugin and a signed-in user (otherwise a recent-titles scan) |
 | `get_topic` | A thread in full, accepted answer and triage stage marked | nothing | — |
 | `get_topic_answer` | The answer to one topic | nothing | Q&A for an accepted answer (otherwise the top reply, labelled) |
 | `get_post` | One post with its topic | nothing | — |
 | `list_categories` | Category tree with ids | nothing | — |
-| `list_recent_topics` | Recent, popular, top or unread topics | nothing | a token for `unread` |
+| `list_recent_topics` | Recent, popular, top or unread topics, forum-wide or for one category, with ticket stages | nothing | a signed-in user for `unread` |
 | `list_unanswered_questions` | Questions nobody has answered | nothing | Q&A (otherwise topics with no replies) |
 | `get_triage_status` | A topic's stage: received, in progress, answered, closed | nothing | Shotef |
 | `get_triage_board` | A team's board by column, plus the status keys `set_ticket_status` takes | nothing | Shotef, team member |
+| `search_tickets` | Find tickets on every board you can see: by words, lane (active, backlog, intake, closed), status, owner, priority, help wanted, Q&A state, tag, age, reporter silence | nothing | Shotef, team member |
 | `get_ticket` | A ticket with its history and internal notes | nothing | Shotef, team member |
 | `add_ticket_note` | Leave an internal note only the team sees | ticket | Shotef, team member |
 | `set_ticket_status` | Move a ticket, or close it as resolved or no-response | ticket | Shotef, team member |

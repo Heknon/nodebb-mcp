@@ -12,7 +12,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { isUsable } from '../capabilities.js';
 import {
-	explainShotefError, getBoard, getTicket, getTriageStatus, type BoardCard,
+	explainShotefError, getBoard, getTicket, getTriageStatus, searchTickets, type BoardCard, type TicketFilters,
 } from '../integrations/shotef.js';
 import { getTopic } from '../nodebb/forum.js';
 import type { ToolContext } from './context.js';
@@ -37,6 +37,113 @@ function cardLine(item: BoardCard): string[] {
 }
 
 export function registerTriageTools(server: McpServer, ctx: ToolContext): void {
+	server.registerTool(
+		'search_tickets',
+		{
+			title: 'Search triage tickets',
+			description:
+				'Find Shotef tickets across every triage board you can see, by any mix of: words in the ' +
+				'title or tags, lane (active, backlog — the parked Blocked/Deferred/Feature lanes —, intake, ' +
+				'closed), status column, owner ("me", "unclaimed", a username or uid), priority, help-wanted, ' +
+				'Q&A state, tag, how long it has been open, and how long the reporter has been silent. ' +
+				'Results are most urgent first. Use it for "what is on my plate", "show the backlog", "which ' +
+				'urgent tickets are unclaimed", or to find the ticket for a problem you know by name.',
+			inputSchema: {
+				query: z.string().optional().describe('Words that must all appear in the title or tags.'),
+				team: z.string().optional().describe('Only this team\'s board (ids from get_triage_board). Default: every team you can see.'),
+				lane: z
+					.enum(['open', 'active', 'backlog', 'intake', 'closed', 'all'])
+					.optional()
+					.describe('open (default) = everything not closed; backlog = parked lanes; intake = shared tickets nobody has taken.'),
+				status: z.string().optional().describe('One column key, e.g. in_work, waiting, blocked.'),
+				owner: z
+					.union([z.string().min(1), z.number().int().positive()])
+					.optional()
+					.describe('"me", "unclaimed", a username, or a uid.'),
+				priority: z
+					.array(z.enum(['low', 'normal', 'high', 'urgent']))
+					.optional()
+					.describe('Only these priorities, e.g. ["high","urgent"].'),
+				help_wanted: z.boolean().optional().describe('Only tickets with (true) or without (false) a call for help.'),
+				question: z.enum(['solved', 'unsolved']).optional().describe('Only Q&A questions in this state.'),
+				tag: z.string().optional().describe('Only tickets with this tag.'),
+				min_open_days: z.number().int().min(0).optional().describe('Open at least this many days.'),
+				min_silent_days: z
+					.number()
+					.int()
+					.min(0)
+					.optional()
+					.describe('Answered, and the reporter silent at least this many days.'),
+				limit: z.number().int().min(1).max(100).optional().describe('Maximum tickets. Default 25.'),
+			},
+			annotations: { readOnlyHint: true, openWorldHint: true },
+		},
+		async (args) => {
+			try {
+				const caps = await ctx.capabilities.get();
+				if (!isUsable(caps.shotef)) {
+					return text(`No tickets can be searched.\n\n${caps.shotef.reason ?? ''}\n\n${UNAVAILABLE_ADVICE}`.trim());
+				}
+				const filters: TicketFilters = {
+					query: args.query,
+					team: args.team,
+					lane: args.lane,
+					status: args.status,
+					owner: args.owner,
+					priorities: args.priority,
+					helpWanted: args.help_wanted,
+					question: args.question,
+					tag: args.tag,
+					minOpenDays: args.min_open_days,
+					minSilentDays: args.min_silent_days,
+				};
+				const result = await searchTickets(ctx.client, ctx.config, caps, filters);
+				if (!result.available || !result.teams.length) {
+					const lines = ['# Ticket search', '', result.reason ?? 'No triage board is visible.'];
+					if (caps.shotef.warning) lines.push('', `⚠️ ${caps.shotef.warning}`);
+					return text(lines.join('\n'));
+				}
+
+				const described = [
+					args.query ? `"${args.query}"` : '',
+					`lane: ${args.lane ?? 'open'}`,
+					args.status ? `status: ${args.status}` : '',
+					args.owner !== undefined ? `owner: ${args.owner}` : '',
+					args.priority?.length ? `priority: ${args.priority.join('/')}` : '',
+					args.help_wanted !== undefined ? (args.help_wanted ? 'help wanted' : 'no help wanted') : '',
+					args.question ? `question: ${args.question}` : '',
+					args.tag ? `tag: ${args.tag}` : '',
+					args.min_open_days !== undefined ? `open ≥ ${args.min_open_days}d` : '',
+					args.min_silent_days !== undefined ? `reporter silent ≥ ${args.min_silent_days}d` : '',
+				].filter(Boolean).join(' · ');
+				const teams = result.teams.map(team => `${team.name} (${team.id})`).join(', ');
+				const limit = args.limit ?? 25;
+				const shown = result.tickets.slice(0, limit);
+
+				const lines = [
+					`# ${result.tickets.length} ticket${result.tickets.length === 1 ? '' : 's'} — ${described}`,
+					`_Searched: ${teams}._`,
+					'',
+				];
+				if (!shown.length) lines.push('_No ticket matches._');
+				for (const ticket of shown) {
+					const [title, facts, url] = cardLine(ticket);
+					lines.push(
+						title!,
+						`  ${ticket.teamName} · ${ticket.columnLabel} \`${ticket.column}\` (${ticket.laneName})${facts!.trim() ? ` · ${facts!.trim()}` : ''}`,
+						url!,
+					);
+				}
+				if (result.tickets.length > shown.length) {
+					lines.push('', `_${result.tickets.length - shown.length} more; raise limit or narrow the filters._`);
+				}
+				return text(lines.join('\n'));
+			} catch (err) {
+				return toolError('search tickets', err, explainShotefError);
+			}
+		},
+	);
+
 	server.registerTool(
 		'get_triage_status',
 		{

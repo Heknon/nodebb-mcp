@@ -4,13 +4,13 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import { isUsable } from '../capabilities.js';
-import { getTriageStatus } from '../integrations/shotef.js';
+import { getTriageStatus, getTriageStatuses } from '../integrations/shotef.js';
 import { getPost, getTopic, listCategories, listTopics, search } from '../nodebb/forum.js';
 import type { CategoryNode } from '../nodebb/types.js';
 import { gatherCandidates } from '../research.js';
 import type { ToolContext } from './context.js';
 import {
-	degradationNote, formatCandidate, formatDate, formatTopicDetail, formatTopicSummary, text, toolError,
+	degradationNote, formatCandidate, formatDate, formatTopicDetail, formatTopicSummary, formatTriage, text, toolError,
 } from './format.js';
 
 export function registerForumTools(server: McpServer, ctx: ToolContext): void {
@@ -129,7 +129,9 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					if (!fallback.candidates.length) {
 						lines.push('No recent topic title overlapped this query.');
 					} else {
-						fallback.candidates.forEach((candidate, i) => lines.push(formatCandidate(candidate, i + 1), ''));
+						const triage = await getTriageStatuses(ctx.client, ctx.config, caps, fallback.candidates.map(c => c.tid));
+						fallback.candidates.forEach((candidate, i) =>
+							lines.push(formatCandidate(candidate, i + 1, triage.get(candidate.tid)), ''));
 					}
 					return text(lines.join('\n').trim());
 				}
@@ -159,14 +161,18 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 					pageCount > 1 ? `_Page ${args.page ?? 1} of ${pageCount}._` : '',
 					'',
 				];
+				// Which hits already have a ticket, and where it stands (one batched call).
+				const triage = await getTriageStatuses(ctx.client, ctx.config, caps, hits.map(hit => hit.tid));
 				hits.forEach((hit, i) => {
 					const facts = [hit.categoryName, hit.author?.username, formatDate(hit.timestamp)]
 						.filter(Boolean)
 						.join(' · ');
+					const triageLine = formatTriage(triage.get(hit.tid));
 					lines.push(
 						`${i + 1}. **#${hit.tid} ${hit.title}**${hit.isSolved ? ' · **solved**' : ''}`,
 						`   ${facts}`,
 						`   > ${hit.snippet.replace(/\n+/g, ' ')}`,
+						...(triageLine ? [`   ${triageLine}`] : []),
 						`   ${hit.url}`,
 						'',
 					);
@@ -295,31 +301,42 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 		{
 			title: 'List recent topics',
 			description:
-				'Browse topic listings — recent, popular, top, or unread — optionally inside one category. ' +
-				'Useful for getting a feel for what is being reported lately, and as the way to explore a ' +
-				'forum that has no search plugin.',
+				'Browse topic listings — recent, popular, top, or unread — for the whole forum or one ' +
+				'category (e.g. a category\'s most popular topics this week). Each topic shows its triage ' +
+				'stage when it is a Shotef ticket. Useful for seeing what is being reported lately, and as ' +
+				'the way to explore a forum that has no search plugin.',
 			inputSchema: {
 				source: z
 					.enum(['recent', 'popular', 'top', 'unread'])
 					.optional()
-					.describe('Which listing. Default recent. unread requires an authenticated token.'),
-				cid: z.number().int().positive().optional().describe('Restrict to one category id.'),
+					.describe('Which listing. Default recent. unread needs a signed-in user.'),
+				cid: z.number().int().positive().optional().describe('Only this category (ids from list_categories).'),
+				term: z
+					.enum(['daily', 'weekly', 'monthly', 'alltime'])
+					.optional()
+					.describe('Time window for popular and top. Default alltime.'),
 				limit: z.number().int().min(1).max(50).optional().describe('Maximum topics. Default 20.'),
 				page: z.number().int().min(1).optional().describe('Listing page.'),
 			},
 			annotations: { readOnlyHint: true, openWorldHint: true },
 		},
-		async ({ source, cid, limit, page }) => {
+		async ({ source, cid, term, limit, page }) => {
 			try {
 				const caps = await ctx.capabilities.get();
 				const { topics, source: usedSource } = await listTopics(ctx.client, {
-					source, cid, limit, page, qna: isUsable(caps.qna),
+					source, cid, term, limit, page, qna: isUsable(caps.qna),
 				});
 				if (!topics.length) {
-					return text(`No topics found in ${usedSource}.`);
+					return text(`No topics found (${usedSource}).`);
 				}
+				const triage = await getTriageStatuses(ctx.client, ctx.config, caps, topics.map(topic => topic.tid));
 				const lines = [`# Topics (${usedSource})`, ''];
-				topics.forEach(topic => lines.push(formatTopicSummary(topic), ''));
+				for (const topic of topics) {
+					lines.push(formatTopicSummary(topic));
+					const triageLine = formatTriage(triage.get(topic.tid));
+					if (triageLine) lines.push(triageLine);
+					lines.push('');
+				}
 				return text(lines.join('\n').trim());
 			} catch (err) {
 				return toolError('list topics', err);

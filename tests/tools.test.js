@@ -37,6 +37,7 @@ test('the server advertises every tool, prompt and documentation resource', asyn
 		'list_unanswered_questions',
 		'pass_ticket',
 		'search_forum',
+		'search_tickets',
 		'set_ticket_priority',
 		'set_ticket_status',
 	]);
@@ -293,4 +294,66 @@ test('an unreachable forum degrades to an explained error', async (t) => {
 
 	const search = await mcp.call('search_forum', { query: 'anything' });
 	assert.match(search.text, /Could not|unreachable|reach/i);
+});
+
+test('list_recent_topics reads a category\'s popular topics, with ticket stages', async (t) => {
+	const { forum, mcp } = await fullStack(t);
+	const { text } = await mcp.call('list_recent_topics', { source: 'popular', cid: 3, term: 'weekly' });
+	assert.match(text, /# Topics \(popular weekly in category 3\)/);
+	assert.match(text, /#10 Redis connection refused/);
+	assert.ok(!text.includes('#12 Welcome'), 'other categories are filtered out');
+	assert.match(text, /Triage: In progress · updated/);
+
+	const sent = forum.requests.find(r => r.path === '/api/popular');
+	assert.equal(sent.query.cid, '3');
+	assert.equal(sent.query.term, 'weekly');
+});
+
+test('search_tickets: open tickets across the board, most urgent first, closed excluded', async (t) => {
+	const { mcp } = await fullStack(t);
+	const { text } = await mcp.call('search_tickets');
+	assert.match(text, /# 3 tickets — lane: open/);
+	assert.match(text, /_Searched: Core Support \(core\)\._/);
+	const order = [...text.matchAll(/^- \*\*#(\d+)/gm)].map(m => Number(m[1]));
+	assert.deepEqual(order, [11, 13, 14], 'high before normal before low');
+	assert.ok(!text.includes('#10 Redis'), 'closed is not open');
+	assert.match(text, /Core Support · In work `in_work` \(active\) · priority: high · claimed by maintainer/);
+	assert.match(text, /Core Support · Blocked `blocked` \(backlog\)/);
+});
+
+test('search_tickets filters: backlog lane, owner, priority, words, closed', async (t) => {
+	const { mcp } = await fullStack(t, { NODEBB_API_TOKEN: 'maintainer-token' });
+	const ids = async (args) => [...(await mcp.call('search_tickets', args)).text.matchAll(/^- \*\*#(\d+)/gm)].map(m => Number(m[1]));
+
+	assert.deepEqual(await ids({ lane: 'backlog' }), [14]);
+	assert.deepEqual(await ids({ owner: 'me' }), [11]);
+	assert.deepEqual(await ids({ owner: 'unclaimed' }), [13, 14]);
+	assert.deepEqual(await ids({ owner: 'MAINTAINER' }), [11], 'usernames match case-insensitively');
+	assert.deepEqual(await ids({ priority: ['high', 'urgent'] }), [11]);
+	assert.deepEqual(await ids({ query: 'avatar' }), [14]);
+	assert.deepEqual(await ids({ question: 'unsolved' }), [11]);
+	assert.deepEqual(await ids({ help_wanted: true }), [11]);
+	assert.deepEqual(await ids({ lane: 'closed' }), [10]);
+	assert.deepEqual(await ids({ status: 'todo' }), [13]);
+	assert.deepEqual(await ids({ query: 'no such words here' }), []);
+});
+
+test('search_tickets explains a non-member and a forum without Shotef', async (t) => {
+	const { mcp } = await fullStack(t, { NODEBB_API_TOKEN: 'outsider-token' });
+	assert.match((await mcp.call('search_tickets')).text, /outsider is not a member of any triage team/);
+
+	const forum = await startFakeForum({ plugins: { shotef: false } });
+	const bare = await connect(forum.url, { NODEBB_API_TOKEN: 'admin-token' });
+	t.after(async () => { await bare.close(); await forum.close(); });
+	assert.match((await bare.call('search_tickets')).text, /No tickets can be searched/);
+});
+
+test('search_forum and find_answers say which hits already have a ticket', async (t) => {
+	const { mcp } = await fullStack(t);
+	const search = await mcp.call('search_forum', { query: 'redis' });
+	// The batched status route carries no team name (as in Shotef); the stage is what matters.
+	assert.match(search.text, /#10 Redis[\s\S]*Triage: Closed · updated/);
+
+	const answers = await mcp.call('find_answers', { question: 'redis connection refused' });
+	assert.match(answers.text, /Source: accepted answer[\s\S]*Triage: Closed/);
 });

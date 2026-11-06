@@ -121,7 +121,7 @@ export function formatTopicDetail(topic: TopicDetail, triage?: TriageStatus): st
 	return lines.join('\n').trim();
 }
 
-export function formatCandidate(candidate: Candidate, index: number): string {
+export function formatCandidate(candidate: Candidate, index: number, triage?: TriageStatus): string {
 	const facts: string[] = [];
 	if (candidate.categoryName) facts.push(candidate.categoryName);
 	if (candidate.isSolved === true) facts.push('**solved**');
@@ -132,11 +132,13 @@ export function formatCandidate(candidate: Candidate, index: number): string {
 	const lines = [`${index}. **#${candidate.tid} ${candidate.title}**`];
 	if (facts.length) lines.push(`   ${facts.join(' · ')}`);
 	if (candidate.snippet) lines.push(`   > ${truncate(candidate.snippet.replace(/\n+/g, ' '), 260)}`);
+	const triageLine = formatTriage(triage);
+	if (triageLine) lines.push(`   ${triageLine}`);
 	lines.push(`   ${candidate.url}`);
 	return lines.join('\n');
 }
 
-export function formatAnswered(item: AnsweredCandidate, index: number): string {
+export function formatAnswered(item: AnsweredCandidate, index: number, triage?: TriageStatus): string {
 	const lines = [
 		`${index}. **#${item.topic.tid} ${item.topic.title}**`,
 		`   ${[item.topic.categoryName, formatDate(item.topic.timestamp), `${item.topic.postcount} posts`]
@@ -152,6 +154,8 @@ export function formatAnswered(item: AnsweredCandidate, index: number): string {
 	} else if (item.note) {
 		lines.push(`   ${item.note}`);
 	}
+	const triageLine = formatTriage(triage);
+	if (triageLine) lines.push(`   ${triageLine}`);
 	lines.push(`   Topic: ${item.topic.url}`);
 	return lines.join('\n');
 }
@@ -175,7 +179,7 @@ export function formatInvestigation(investigation: Investigation): string {
 	const withAnswers = answered.filter(item => item.answer);
 	if (withAnswers.length) {
 		lines.push('## Existing answers', '');
-		withAnswers.forEach((item, i) => lines.push(formatAnswered(item, i + 1), ''));
+		withAnswers.forEach((item, i) => lines.push(formatAnswered(item, i + 1, triage.get(item.topic.tid)), ''));
 	} else {
 		lines.push('## Existing answers', '', '_None found — no topic in range carried a usable answer._', '');
 	}

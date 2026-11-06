@@ -93,16 +93,18 @@ export function registerAnswerTools(server: McpServer, ctx: ToolContext): void {
 				notes.forEach(note => lines.push(`_${note}_`));
 				if (notes.length) lines.push('');
 
+				// Which of these already have a ticket, and where it stands (one batched call).
+				const triage = await getTriageStatuses(ctx.client, ctx.config, caps, ranked.slice(0, 25).map(c => c.tid));
 				if (!withAnswers.length) {
 					lines.push(
 						'No topic in range carried a usable answer. Closest related topics:',
 						'',
-						...ranked.slice(0, 5).map((candidate, i) => formatCandidate(candidate, i + 1)),
+						...ranked.slice(0, 5).map((candidate, i) => formatCandidate(candidate, i + 1, triage.get(candidate.tid))),
 					);
 					return text(lines.join('\n'));
 				}
 
-				withAnswers.forEach((item, i) => lines.push(formatAnswered(item, i + 1), ''));
+				withAnswers.forEach((item, i) => lines.push(formatAnswered(item, i + 1, triage.get(item.topic.tid)), ''));
 
 				const unconfirmed = withAnswers.filter(item => item.basis !== 'accepted').length;
 				if (unconfirmed) {

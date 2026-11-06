@@ -125,6 +125,8 @@ export interface BoardCard {
 	lane: 'board' | 'backlog' | 'intake';
 	priority?: string;
 	claimedBy?: string;
+	claimedByUid?: number;
+	tags: string[];
 	helpWanted?: boolean;
 	isQuestion?: boolean;
 	isSolved?: boolean;
@@ -173,6 +175,10 @@ function toCard(client: NodeBBClient, raw: Raw, column: string, lane: BoardCard[
 		lane,
 		priority: raw.priority ? String(raw.priority) : undefined,
 		claimedBy: raw.claimedBy?.username ? decodeTitle(raw.claimedBy.username) : undefined,
+		claimedByUid: Number(raw.claimedByUid ?? raw.claimedBy?.uid) || undefined,
+		tags: (Array.isArray(raw.tags) ? raw.tags : [])
+			.map((tag: unknown) => (typeof tag === 'string' ? tag : decodeTitle((tag as Raw)?.value)))
+			.filter(Boolean),
 		helpWanted: Boolean(raw.helpWanted),
 		...(raw.isQuestion ? { isQuestion: true, isSolved: Boolean(raw.isSolved) } : {}),
 		ghost: Boolean(raw.ghost) || undefined,
@@ -268,6 +274,139 @@ export async function getBoard(
 		items,
 		onDuty: raw.shotef?.username ? decodeTitle(raw.shotef.username) : undefined,
 		isManager: Boolean(raw.isManager),
+	};
+}
+
+/* --------------------------------------------------------- ticket search */
+
+export type TicketLane = 'active' | 'backlog' | 'intake' | 'closed';
+
+export interface TicketFilters {
+	/** Words that must all appear in the title or tags (case-insensitive). */
+	query?: string;
+	team?: string;
+	/** Default 'open' = everything not closed. */
+	lane?: TicketLane | 'open' | 'all';
+	status?: string;
+	/** 'me', 'unclaimed', a username, or a uid. */
+	owner?: string | number;
+	priorities?: string[];
+	helpWanted?: boolean;
+	question?: 'solved' | 'unsolved';
+	tag?: string;
+	minOpenDays?: number;
+	minSilentDays?: number;
+}
+
+export interface FoundTicket extends BoardCard {
+	teamId: string;
+	teamName: string;
+	laneName: TicketLane;
+	columnLabel: string;
+}
+
+export interface TicketSearch {
+	available: boolean;
+	reason?: string;
+	/** Teams whose boards were searched. */
+	teams: { id: string; name: string }[];
+	tickets: FoundTicket[];
+}
+
+const PRIORITY_RANK: Record<string, number> = { urgent: 3, high: 2, normal: 1, low: 0 };
+
+/**
+ * Find tickets across every board the acting user can see. Shotef has no search
+ * route, but each board payload holds all of a team's tickets — active lanes,
+ * the parked backlog, the intake, and closed — so we read the boards and filter
+ * here. A ticket passed between teams shows up on both boards (a read-only
+ * "ghost" on the origin); the handling team's copy wins.
+ */
+export async function searchTickets(
+	client: NodeBBClient,
+	config: Config,
+	capabilities: Capabilities,
+	filters: TicketFilters,
+): Promise<TicketSearch> {
+	const first = await getBoard(client, config, capabilities, filters.team);
+	if (!first.available || !first.columns.length) {
+		return { available: first.available, reason: first.reason, teams: [], tickets: [] };
+	}
+
+	const boards = [first];
+	if (!filters.team) {
+		for (const team of first.teams) {
+			if (team.id === first.teamId) continue;
+			// eslint-disable-next-line no-await-in-loop
+			const board = await getBoard(client, config, capabilities, team.id).catch(() => undefined);
+			if (board?.columns.length && board.teamId === team.id) boards.push(board);
+		}
+	}
+
+	const byTid = new Map<number, FoundTicket>();
+	for (const board of boards) {
+		const columnOf = new Map(board.columns.map(column => [column.key, column]));
+		for (const card of board.items) {
+			const column = columnOf.get(card.column);
+			const laneName: TicketLane = card.lane === 'intake'
+				? 'intake'
+				: card.lane === 'backlog' ? 'backlog' : column?.class === 'terminal' ? 'closed' : 'active';
+			const found: FoundTicket = {
+				...card,
+				teamId: board.teamId ?? '',
+				teamName: board.teamName ?? board.teamId ?? '',
+				laneName,
+				columnLabel: column?.label ?? card.column,
+			};
+			const existing = byTid.get(card.tid);
+			if (!existing || (existing.ghost && !card.ghost)) byTid.set(card.tid, found);
+		}
+	}
+
+	const me = capabilities.forum;
+	const words = (filters.query ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+	const lane = filters.lane ?? 'open';
+	const owner = typeof filters.owner === 'string' ? filters.owner.trim() : filters.owner;
+
+	const tickets = [...byTid.values()].filter((ticket) => {
+		if (lane === 'open' && ticket.laneName === 'closed') return false;
+		if (lane !== 'open' && lane !== 'all' && ticket.laneName !== lane) return false;
+		if (filters.status && ticket.column !== filters.status) return false;
+		if (owner !== undefined && owner !== '') {
+			if (owner === 'unclaimed') {
+				if (ticket.claimedBy) return false;
+			} else if (owner === 'me') {
+				if (!me.uid || ticket.claimedByUid !== me.uid) return false;
+			} else if (typeof owner === 'number' || /^\d+$/.test(owner)) {
+				if (ticket.claimedByUid !== Number(owner)) return false;
+			} else if (ticket.claimedBy?.toLowerCase() !== owner.toLowerCase()) {
+				return false;
+			}
+		}
+		if (filters.priorities?.length && !filters.priorities.includes(ticket.priority ?? 'normal')) return false;
+		if (filters.helpWanted !== undefined && Boolean(ticket.helpWanted) !== filters.helpWanted) return false;
+		if (filters.question === 'solved' && !(ticket.isQuestion && ticket.isSolved)) return false;
+		if (filters.question === 'unsolved' && !(ticket.isQuestion && !ticket.isSolved)) return false;
+		if (filters.tag && !ticket.tags.some(tag => tag.toLowerCase() === filters.tag!.toLowerCase())) return false;
+		if (filters.minOpenDays !== undefined && (ticket.openDays ?? -1) < filters.minOpenDays) return false;
+		if (filters.minSilentDays !== undefined && (ticket.noReplyDays ?? -1) < filters.minSilentDays) return false;
+		if (words.length) {
+			const haystack = `${ticket.title} ${ticket.tags.join(' ')}`.toLowerCase();
+			if (!words.every(word => haystack.includes(word))) return false;
+		}
+		return true;
+	});
+
+	// Most urgent first, then longest open.
+	tickets.sort((a, b) =>
+		(PRIORITY_RANK[b.priority ?? 'normal'] ?? 1) - (PRIORITY_RANK[a.priority ?? 'normal'] ?? 1) ||
+		(b.openDays ?? 0) - (a.openDays ?? 0) ||
+		a.tid - b.tid);
+
+	return {
+		available: true,
+		teams: boards.map(board => ({ id: board.teamId ?? '', name: board.teamName ?? board.teamId ?? '' })),
+		tickets,
 	};
 }
 

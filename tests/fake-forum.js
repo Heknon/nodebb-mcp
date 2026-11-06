@@ -427,9 +427,12 @@ export async function startFakeForum(opts = {}) {
 			});
 		}
 
-		if (path === '/api/recent' || path === '/api/popular' || path === '/api/top') {
+		if (path === '/api/recent' || path === '/api/popular' || path === '/api/top' || path === '/api/unread') {
 			const pageNo = Number(url.searchParams.get('page') ?? 1);
-			return page({ topics: pageNo === 1 ? Object.values(TOPICS).map(summaryOf) : [] });
+			// Every listing filters by ?cid= (the category picker on those pages).
+			const cid = Number(url.searchParams.get('cid')) || undefined;
+			const list = Object.values(TOPICS).filter(t => !cid || t.cid === cid).map(summaryOf);
+			return page({ topics: pageNo === 1 ? list : [], ...(cid ? { selectedCids: [cid] } : {}) });
 		}
 
 		if (path === '/api/unsolved' || path === '/api/solved') {

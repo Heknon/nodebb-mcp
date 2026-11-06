@@ -226,20 +226,35 @@ export async function listCategories(client: NodeBBClient): Promise<CategoryNode
 	return list.map(toNode);
 }
 
-/** Topic listings: recent / popular / top / unread, optionally within a category. */
+export type TopicListTerm = 'daily' | 'weekly' | 'monthly' | 'alltime';
+
+/**
+ * Topic listings: recent / popular / top / unread, optionally within one
+ * category. Every listing route takes `?cid=` to filter by category (NodeBB's
+ * category picker on those pages), so a category's *popular* or *top* topics are
+ * the same route as the forum's; `term` (daily/weekly/monthly/alltime — not
+ * day/week, which silently match nothing) scopes popular and top.
+ */
 export async function listTopics(
 	client: NodeBBClient,
-	opts: { source?: TopicListSource; cid?: number; page?: number; limit?: number; qna: boolean },
+	opts: { source?: TopicListSource; cid?: number; term?: TopicListTerm; page?: number; limit?: number; qna: boolean },
 ): Promise<{ topics: TopicSummary[]; source: string }> {
-	const { source = 'recent', cid, page = 1, limit = 20 } = opts;
+	const { source = 'recent', cid, term, page = 1, limit = 20 } = opts;
 
-	const path = cid ? `/category/${cid}` : `/${source}`;
-	const raw = await client.read<Raw>(path, { page });
+	const scoped = source === 'popular' || source === 'top';
+	const raw = await client.read<Raw>(`/${source}`, {
+		page,
+		...(cid ? { cid } : {}),
+		...(scoped && term ? { term } : {}),
+	});
 	const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
 
+	const label = [source, scoped && term && term !== 'alltime' ? term : '', cid ? `in category ${cid}` : '']
+		.filter(Boolean)
+		.join(' ');
 	return {
 		topics: list.slice(0, limit).map(topic => toTopicSummary(client, topic, opts.qna)),
-		source: cid ? `category ${cid}` : source,
+		source: label,
 	};
 }
 
