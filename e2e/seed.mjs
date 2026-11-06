@@ -153,7 +153,7 @@ async function purge(fixture) {
 
 /**
  * Forum state every run needs, applied even when the fixture is reused:
- *  - settings that would otherwise stall scripted posting;
+ *  - settings that would otherwise stall scripted posting and voting;
  *  - a high per-IP login limit. NodeBB locks an IP after `ipLoginAttempts` (20)
  *    logins an hour — successful ones included — and every e2e run signs in a
  *    few times from 127.0.0.1. Test forum only: production keeps the default;
@@ -165,6 +165,10 @@ async function ensureBaseline() {
 		['postQueue', 0], ['postDelay', 0], ['initialPostDelay', 0], ['newbiePostDelay', 0],
 		['newbieReputationThreshold', 0], ['groupsExemptFromPostQueue', '["registered-users"]'],
 		['ipLoginAttempts', 10000],
+		// The write suite has the same reporter upvote the same answerer every run;
+		// NodeBB allows 6 upvotes per user per day (20 in total) by default.
+		['upvotesPerDay', 10000], ['upvotesPerUserPerDay', 10000],
+		['downvotesPerDay', 10000], ['downvotesPerUserPerDay', 10000],
 	]) {
 		// eslint-disable-next-line no-await-in-loop
 		await setting(key, value).catch(err => log(`  (setting ${key}: ${err.message})`));

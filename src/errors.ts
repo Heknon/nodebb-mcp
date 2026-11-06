@@ -7,6 +7,7 @@ export type FailureKind =
 	| 'network'      // could not reach the forum at all
 	| 'timeout'      // the forum did not answer in time
 	| 'auth'         // 401/403 — missing or insufficient token
+	| 'sign-in'      // our own sign-in failed or the session ended — not a permission refusal
 	| 'not-found'    // 404 — no such topic/category/route
 	| 'unavailable'  // the route exists but the feature is not installed
 	| 'rate-limit'   // 429
@@ -44,6 +45,8 @@ export class NodeBBError extends Error {
 			case 'auth':
 				return 'Sign the server in: set NODEBB_USERNAME and NODEBB_PASSWORD, or NODEBB_API_TOKEN ' +
 					'(ACP -> Settings -> API Access; a master token also needs NODEBB_UID).';
+			case 'sign-in':
+				return 'Check NODEBB_USERNAME / NODEBB_PASSWORD, or reconnect to sign in again.';
 			case 'not-found':
 				return 'The item does not exist, or is not visible to this token.';
 			case 'unavailable':

@@ -51,6 +51,10 @@ wrong); the real forum did none of those. So:
 | e2e, full stack | `npm run test:e2e` | seeded forum, plugins on | real payload shapes, identities, live hooks |
 | e2e, core only | `npm run e2e` (toggles plugins) | seeded forum | real degradation, stale plugin state |
 
+OAuth is tested with the SDK's own OAuth client and a scripted browser
+(`tests/oauth-harness.js`) — unit against the fake, e2e against the real forum
+with the server started as a child process the way it is deployed.
+
 `npm run e2e` does all of it: provision if needed → start → build → seed →
 full-stack suites → plugins off → core suite → plugins back on (always, via a
 trap). ~1 minute on a warm forum. e2e tests **skip** (not fail) when no seeded
@@ -105,6 +109,23 @@ renews a lost session and retries once, never retries a refused sign-in, and
 caches the session in a 0600 file so restarts don't count against NodeBB's
 login rate limits. See the reference for the observed login behaviour.
 
+**Shared HTTP server** (`src/http.ts`, `src/oauth/`, `NODEBB_MCP_HTTP_PORT`): the
+server is its own OAuth 2.1 authorization server (SDK `mcpAuthRouter`: metadata,
+dynamic registration, PKCE, rotating refresh tokens) and the forum is the
+identity provider — the sign-in page posts to NodeBB's real login, and the
+resulting forum session *is* the grant. The password is never kept, so such a
+session cannot renew: when it ends, the tool reports it, the grant ends, and
+the next request is a 401 that sends the client back to sign-in. Each grant has
+its own client + capability registry; each MCP session is bound to its grant.
+
+Two rules that came out of the e2e runs:
+- A sign-in failure is error kind `sign-in`, never `auth` — several readers
+  treat `auth` as "not permitted" and would turn it into a polite note.
+- `capabilities.get()` **throws** a sign-in failure (tools then fail with the
+  reason); `capabilities.report()` never throws (`forum_capabilities`). Otherwise
+  a dead session probes as "plugin unknown" and tools degrade as if Shotef were
+  missing.
+
 NodeBB **does not reject an unknown bearer token** — it serves the request as a
 guest. `hasToken` means nothing; `caps.forum.authenticated` (from `/api/config`
 → `uid`) is the truth. A **master token** needs `_uid` on every call
@@ -120,6 +141,8 @@ src/server.ts           McpServer + instructions
 src/config.ts           env → Config (NODEBB_URL required; NODEBB_ENABLE_WRITES opt-in, public writes only)
 src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid, session retry
 src/session.ts          password sign-in: cookie jar, CSRF, renewal, refusal memory, session file
+src/http.ts             shared HTTP server: OAuth router, sign-in route, per-grant MCP sessions
+src/oauth/              provider (OAuthServerProvider + sign-in), store (hashed tokens, grants), pages
 src/capabilities.ts     probes + verified identity + writes/triage capabilities, TTL-cached
 src/nodebb/forum.ts     topics/posts/search/listings/core writes, normalized
 src/integrations/       qna.ts (answers, unsolved), shotef.ts (status, board, tickets, actions)

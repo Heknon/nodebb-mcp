@@ -43,9 +43,17 @@ export interface BuiltServer {
 	capabilities: CapabilityRegistry;
 }
 
-export async function buildServer(config: Config): Promise<BuiltServer> {
-	const client = new NodeBBClient(config);
-	const capabilities = new CapabilityRegistry(client, config);
+/**
+ * Build an MCP server over the forum. By default it signs in with the
+ * configured credentials; the HTTP server passes a per-user `client` (and that
+ * user's `capabilities`) instead, so each OAuth user acts as themselves.
+ */
+export async function buildServer(
+	config: Config,
+	opts: { client?: NodeBBClient; capabilities?: CapabilityRegistry } = {},
+): Promise<BuiltServer> {
+	const client = opts.client ?? new NodeBBClient(config);
+	const capabilities = opts.capabilities ?? new CapabilityRegistry(client, config);
 
 	const server = new McpServer(
 		{ name: SERVER_NAME, version: SERVER_VERSION },

@@ -78,8 +78,15 @@ export class NodeBBClient {
 	readonly session: PasswordSession | undefined;
 	private readonly sessionCheckMs: number = 30_000;
 
-	constructor(private readonly config: Config) {
-		if (!config.token && config.username && config.password) {
+	/**
+	 * @param session a signed-in session to use instead of the configured
+	 *        credentials — how the HTTP server gives each OAuth user their own.
+	 */
+	constructor(private readonly config: Config, opts: { session?: PasswordSession } = {}) {
+		if (opts.session) {
+			this.session = opts.session;
+			this.sessionCheckMs = config.sessionCheckMs;
+		} else if (!config.token && config.username && config.password) {
 			this.session = new PasswordSession({
 				url: config.url,
 				username: config.username,
@@ -97,8 +104,8 @@ export class NodeBBClient {
 
 	/** How this client authenticates. A token wins over a username/password pair. */
 	get authMode(): AuthMode {
-		if (this.config.token) return 'token';
-		return this.session ? 'password' : 'none';
+		if (this.session) return 'password';
+		return this.config.token ? 'token' : 'none';
 	}
 
 	/** Absolute forum URL for a path — used to cite sources in tool output. */
@@ -118,7 +125,7 @@ export class NodeBBClient {
 			}
 		}
 		// Master tokens are rejected without an acting uid.
-		if (this.config.token && this.config.uid && !url.searchParams.has('_uid')) {
+		if (!this.session && this.config.token && this.config.uid && !url.searchParams.has('_uid')) {
 			url.searchParams.set('_uid', this.config.uid);
 		}
 		return url.toString();
@@ -172,8 +179,8 @@ export class NodeBBClient {
 		const generation = this.session?.currentGeneration ?? 0;
 
 		const headers: Record<string, string> = { accept: 'application/json' };
-		if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
-		else if (this.session) Object.assign(headers, this.session.headers(method));
+		if (this.session) Object.assign(headers, this.session.headers(method));
+		else if (this.config.token) headers.authorization = `Bearer ${this.config.token}`;
 		if (body !== undefined) headers['content-type'] = 'application/json';
 
 		const timeout = AbortSignal.timeout(this.config.timeoutMs);

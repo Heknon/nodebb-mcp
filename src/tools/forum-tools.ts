@@ -33,7 +33,8 @@ export function registerForumTools(server: McpServer, ctx: ToolContext): void {
 		},
 		async ({ refresh }) => {
 			try {
-				const caps = await ctx.capabilities.get(Boolean(refresh));
+				// A report, not a precondition: it must render even when signing in failed.
+				const caps = await ctx.capabilities.report(Boolean(refresh));
 				const lines = ['# Forum capabilities', ''];
 
 				lines.push(`**Forum:** ${caps.forum.url}`);

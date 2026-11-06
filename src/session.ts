@@ -40,14 +40,33 @@ import { NodeBBError } from './errors.js';
 export interface PasswordSessionOptions {
 	url: string;
 	username: string;
-	password: string;
+	/**
+	 * The password, kept in memory so the session can sign in again by itself.
+	 * Omitted for a session handed over from an OAuth sign-in: the server never
+	 * keeps a user's password, so such a session cannot be renewed — when NodeBB
+	 * ends it, it reports `session-ended` and the user signs in again.
+	 */
+	password?: string;
+	/** Start from an existing signed-in session instead of signing in. */
+	initial?: SessionState;
 	/** Session cache path; undefined = keep the session in memory only. */
 	sessionFile: string | undefined;
 	timeoutMs: number;
 	now?: () => number;
+	/** Called after the session's cookies change (e.g. to persist them). */
+	onChange?: (state: SessionState) => void;
+	/** Called once when a password-less session is found to be over. */
+	onEnded?: () => void;
 }
 
-type Refusal = 'credentials' | 'account-locked' | 'ip-locked' | 'no-session';
+/** A signed-in session, as it can be handed over or stored. */
+export interface SessionState {
+	cookies: Record<string, string>;
+	csrf: string;
+	uid: number;
+}
+
+type Refusal = 'credentials' | 'account-locked' | 'ip-locked' | 'no-session' | 'session-ended';
 
 /** How long a refused sign-in is remembered — NodeBB's attempt counters last an hour. */
 const REFUSAL_HOLD_MS = 60 * 60 * 1000;
@@ -75,7 +94,8 @@ export class SignInError extends NodeBBError {
 	readonly reason: Refusal;
 
 	constructor(reason: Refusal, message: string, opts: { status?: number; forumMessage?: string } = {}) {
-		super('auth', message, { ...opts, path: '/api/v3/utilities/login' });
+		// Its own kind: callers that read 'auth' as "not permitted" must not swallow it.
+		super('sign-in', message, { ...opts, path: '/api/v3/utilities/login' });
 		this.name = 'SignInError';
 		this.reason = reason;
 	}
@@ -86,6 +106,8 @@ export class SignInError extends NodeBBError {
 				return 'Fix NODEBB_USERNAME / NODEBB_PASSWORD and restart the server.';
 			case 'no-session':
 				return 'Sign in once in a browser to finish any pending step, or use NODEBB_API_TOKEN instead.';
+			case 'session-ended':
+				return 'Reconnect this MCP server to sign in to the forum again.';
 			default:
 				return 'Wait for the lock to expire (an hour by default) or ask a forum administrator.';
 		}
@@ -119,7 +141,43 @@ export class PasswordSession {
 	/** When the forum last showed it honours this session (0 = never, this process). */
 	private confirmedAt = 0;
 
-	constructor(private readonly opts: PasswordSessionOptions) {}
+	constructor(private readonly opts: PasswordSessionOptions) {
+		if (opts.initial) {
+			for (const [name, value] of Object.entries(opts.initial.cookies)) this.cookies.set(name, value);
+			this.csrf = opts.initial.csrf;
+			this.uid = opts.initial.uid;
+			this.loaded = true;
+			this.generation = 1;
+			this.confirmedAt = this.now();
+		}
+	}
+
+	/** The session as it can be handed over or stored (never includes a password). */
+	exportState(): SessionState | undefined {
+		if (!this.cookies.size || !this.csrf || !this.uid) return undefined;
+		return { cookies: Object.fromEntries(this.cookies), csrf: this.csrf, uid: this.uid };
+	}
+
+	/** Sign in now (once), for a caller that needs the result rather than a lazy session. */
+	async signInNow(): Promise<SessionState> {
+		await this.ensure();
+		const state = this.exportState();
+		if (!state) throw new SignInError('no-session', `Signing in as "${this.opts.username}" produced no session.`);
+		return state;
+	}
+
+	/** End the session on the forum (best effort) — used when access is revoked. */
+	async signOut(): Promise<void> {
+		if (!this.cookies.size) return;
+		try {
+			await this.send('POST', '/logout', {});
+		} catch {
+			// The forum may already have ended it; nothing more to do.
+		}
+		this.cookies.clear();
+		this.csrf = undefined;
+		this.uid = 0;
+	}
 
 	get username(): string {
 		return this.opts.username;
@@ -168,7 +226,20 @@ export class PasswordSession {
 		if (!this.loaded) await this.load();
 		if (this.refusal) throw this.refusal;
 		if (this.cookies.size && this.csrf) return;
+		if (this.opts.password === undefined) throw this.ended();
 		await this.signIn();
+	}
+
+	/** A password-less session the forum no longer honours: latched, reported once. */
+	private ended(): SignInError {
+		if (!this.refusal) {
+			this.refusal = new SignInError(
+				'session-ended',
+				`The forum session for "${this.opts.username}" has ended (it expired or was signed out).`,
+			);
+			this.opts.onEnded?.();
+		}
+		return this.refusal;
 	}
 
 	/**
@@ -179,6 +250,7 @@ export class PasswordSession {
 		if (this.refusal) throw this.refusal;
 		if (this.signingIn) return this.signingIn;
 		if (seenGeneration !== this.generation) return;
+		if (this.opts.password === undefined) throw this.ended();
 		this.cookies.clear();
 		this.csrf = undefined;
 		this.uid = 0;
@@ -205,7 +277,7 @@ export class PasswordSession {
 		this.logins += 1;
 		const res = await this.send('POST', '/api/v3/utilities/login', {
 			username: this.opts.username,
-			password: this.opts.password,
+			password: this.opts.password ?? '',
 			remember: 'on',
 		});
 		if (!res.ok) {
@@ -238,6 +310,8 @@ export class PasswordSession {
 		this.generation += 1;
 		this.confirm();
 		await this.save();
+		const state = this.exportState();
+		if (state) this.opts.onChange?.(state);
 	}
 
 	private classify(status: number, body: string): SignInError | undefined {
@@ -326,7 +400,7 @@ export class PasswordSession {
 		const refused = file.refused;
 		if (refused && refused.until > this.now()) {
 			// A lock holds whatever the password; a rejected password only for that password.
-			const samePassword = refused.reason !== 'credentials' || matches(this.opts.password, refused.salt, refused.hash);
+			const samePassword = refused.reason !== 'credentials' || matches(this.opts.password ?? '', refused.salt, refused.hash);
 			if (samePassword) {
 				this.refusal = new SignInError(refused.reason, `${refused.message} (Remembered from an earlier attempt.)`);
 				return;
@@ -357,7 +431,7 @@ export class PasswordSession {
 				message: refusal.message,
 				until: this.now() + REFUSAL_HOLD_MS,
 				salt,
-				hash: fingerprint(this.opts.password, salt),
+				hash: fingerprint(this.opts.password ?? '', salt),
 			},
 		});
 	}

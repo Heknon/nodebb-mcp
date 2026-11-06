@@ -56,6 +56,12 @@ export interface ForumInfo {
 	username?: string;
 	/** Set when credentials are configured but the forum did not honour them. */
 	authProblem?: string;
+	/**
+	 * Signing in failed or the session ended. Unlike a token the forum silently
+	 * downgrades (which degrades to guest results, with a note), this stops every
+	 * tool: guest results would be mistaken for the person's own view.
+	 */
+	signInError?: NodeBBError;
 	reason?: string;
 }
 
@@ -119,7 +125,19 @@ export class CapabilityRegistry {
 	) {}
 
 	/** Cached capabilities, re-probing when the TTL has expired. */
+	/**
+	 * Capabilities for a tool about to act. Throws when signing in failed or the
+	 * session ended, so the tool fails with that reason instead of degrading as
+	 * if a plugin were missing.
+	 */
 	async get(force = false): Promise<Capabilities> {
+		const caps = await this.report(force);
+		if (caps.forum.signInError) throw caps.forum.signInError;
+		return caps;
+	}
+
+	/** Capabilities as a report — never throws for a sign-in failure (forum_capabilities). */
+	async report(force = false): Promise<Capabilities> {
 		const fresh = this.cached &&
 			Date.now() - this.cached.probedAt < this.config.capabilityTtlMs;
 		if (!force && fresh) return this.cached!;
@@ -140,9 +158,12 @@ export class CapabilityRegistry {
 	private async probe(): Promise<Capabilities> {
 		const { forum, siteConfig } = await this.probeForum();
 
-		// No point probing features on a forum we cannot reach.
-		if (!forum.reachable) {
-			const unknown: Capability = { state: 'unknown', reason: 'Forum unreachable; not probed.' };
+		// No point probing features on a forum we cannot reach, or cannot sign in to.
+		if (!forum.reachable || forum.signInError) {
+			const unknown: Capability = {
+				state: 'unknown',
+				reason: forum.signInError ? 'Not probed: signing in to the forum failed.' : 'Forum unreachable; not probed.',
+			};
 			const result: Capabilities = {
 				forum,
 				search: unknown,
@@ -221,7 +242,7 @@ export class CapabilityRegistry {
 		} catch (err) {
 			// The forum answered, but refused the password: reachable, not signed in.
 			if (err instanceof SignInError) {
-				return { forum: { ...base, reachable: true, authProblem: `${err.message} ${err.hint}` } };
+				return { forum: { ...base, reachable: true, authProblem: `${err.message} ${err.hint}`, signInError: err } };
 			}
 			// A master token without _uid makes the Read API answer 500 with no
 			// explanation, while the Write API says exactly what is wrong. Ask it.

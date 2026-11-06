@@ -336,6 +336,16 @@ export async function startFakeForum(opts = {}) {
 		/** A page payload: NodeBB adds who it was rendered for. */
 		const page = payload => json(200, { ...payload, loggedIn: uid > 0, loggedInUser: uid > 0 ? userOf(uid) : { uid: 0 } });
 
+		if (path === '/logout' && method === 'POST') {
+			// NodeBB's logout: CSRF-checked, ends the session.
+			if (!session || req.headers['x-csrf-token'] !== session.csrf) {
+				res.writeHead(403, { 'content-type': 'text/plain' });
+				return res.end('Forbidden');
+			}
+			sessions.delete(sid);
+			return json(200, { next: '/' });
+		}
+
 		if (path === '/api/v3/utilities/login' && method === 'POST') {
 			const html = (status, text) => {
 				res.writeHead(status, { 'content-type': 'text/html; charset=utf-8' });
@@ -705,6 +715,8 @@ export async function startFakeForum(opts = {}) {
 		loginAttempts,
 		/** Expire every session, as a server-side TTL or a revocation would. */
 		expireSessions() { sessions.clear(); },
+		/** Signed-in sessions, by uid (for asserting sign-out). */
+		sessionsFor(uid) { return [...sessions.values()].filter(entry => entry.uid === uid).length; },
 		lockAccount(uid) { locked.add(uid); },
 		async close() {
 			await new Promise((resolve) => server.close(resolve));

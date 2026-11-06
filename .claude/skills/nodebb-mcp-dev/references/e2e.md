@@ -32,6 +32,7 @@ plugins on|off`. `provision` clones NodeBB v4.x and runs Shotef's own
 | `tests/e2e/read.e2e.test.js` | Read tools as admin / team member / outsider / guest / bogus token / master ± `NODEBB_UID`. |
 | `tests/e2e/write.e2e.test.js` | One ticket's whole life: the reporter, the team member *without* the writes flag (all ticket work), and the same member *with* it (public reply, accepting the answer), as separate processes. Per-run marker in titles so reruns never collide. |
 | `tests/e2e/session.e2e.test.js` | Password sign-in on the real forum: identity, cookie + CSRF writes (Shotef and core), session reuse across processes, renewal after a real revocation, a wrong password tried once. |
+| `tests/e2e/oauth.e2e.test.js` | The shared HTTP server, spawned as `node dist/index.js` with `NODEBB_MCP_HTTP_PORT`: discovery, two real people signing in (SDK OAuth client + scripted browser), isolation, a wrong password on the page, a session signed out on the forum ending only that person's access, `/revoke` logging NodeBB out, the state file holding no password or usable token. |
 | `tests/e2e/core.e2e.test.js` | Same forum, plugins deactivated: degradation and stale Q&A state. |
 
 ## The fixture
@@ -71,6 +72,11 @@ test('…', opts, async () => {
 - Assert on **ids from the fixture**, never on hard-coded numbers.
 - Assert inclusion, not exact sets: write tests add topics on every run.
 - Search indexing and caches are asynchronous — wrap such reads in `eventually()`.
+- e2e **files run in parallel**. Never let two suites sign in as a user whose
+  sessions one of them revokes (the session suite owns `e2e_maintainer`'s
+  sessions; the OAuth suite uses `e2e_helper` / `e2e_reporter`).
+- Repeated runs hit NodeBB's daily limits (votes, logins). The seed's
+  `ensureBaseline()` raises them on the test forum; add new ones there.
 - A new topic/state you need belongs in `seed.mjs`; bump nothing — the fixture is
   rebuilt with `--fresh`.
 

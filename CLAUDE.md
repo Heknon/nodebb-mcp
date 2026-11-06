@@ -66,6 +66,14 @@ Passwords: every `e2e_*` user's is `fixture.password`; `admin` is `Test1234!`.
 `ipLoginAttempts` on this test forum (NodeBB locks an IP after 20 sign-ins an
 hour, and e2e runs sign in repeatedly from 127.0.0.1).
 
+Run the shared HTTP server against this forum (OAuth sign-in with any `e2e_*`
+user and `fixture.password`):
+
+```bash
+NODEBB_URL=http://127.0.0.1:4567 NODEBB_MCP_HTTP_PORT=8799 NODEBB_MCP_STATE_FILE=off node dist/index.js
+# then: claude mcp add --transport http nodebb http://localhost:8799/mcp  (in a throwaway HOME)
+```
+
 ## 4. Traps (each one cost time here)
 
 - **Redis is not a service.** It may be down at session start. Never start it

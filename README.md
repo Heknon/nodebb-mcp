@@ -13,6 +13,13 @@ more (see [Plugins](#plugins)).
 npm install && npm run build
 ```
 
+Two ways to run it:
+
+- **On each person's machine** (stdio): their MCP client starts the server, which
+  acts as one configured forum account. Below.
+- **As one shared server** (HTTP): everyone connects to it and signs in with their
+  own forum account in the browser, OAuth-style. See [Shared server](#shared-server).
+
 ```json
 {
   "mcpServers": {
@@ -111,6 +118,57 @@ Two-factor authentication is not supported; use an API token for such accounts.
 **Check who you are.** NodeBB does not reject an invalid or revoked token; it
 quietly treats the caller as a guest. `forum_capabilities` shows the user the
 forum actually resolved, and flags credentials it refused or ignored.
+
+## Shared server
+
+Run one server for everyone; each person connects their client and signs in with
+**their own** forum account, so their tools act as them with exactly their forum
+and Shotef permissions. The server is its own OAuth authorization server and the
+forum is the identity provider: no outside service is involved, so it works
+air-gapped.
+
+```bash
+NODEBB_URL=https://forum.internal \
+NODEBB_MCP_HTTP_PORT=8080 NODEBB_MCP_HTTP_HOST=0.0.0.0 \
+NODEBB_MCP_PUBLIC_URL=https://mcp.internal \
+node dist/index.js
+```
+
+```bash
+claude mcp add --transport http nodebb https://mcp.internal/mcp
+```
+
+The client opens a browser page on this server: *"\<client> wants to use the forum
+as you"*, with the forum username and password. The password goes to the forum's
+own login and is not stored; the forum session it creates is kept (owner-only
+state file) and the client gets OAuth tokens (stored hashed). Access ends when that
+forum session does: it expires, the person signs it out from their forum account's
+sessions page, or the client revokes its refresh token, which signs the session out. The
+client is then sent to sign in again.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `NODEBB_MCP_HTTP_PORT` | — | Serve over HTTP on this port (enables this mode) |
+| `NODEBB_MCP_HTTP_HOST` | `127.0.0.1` | Interface to bind |
+| `NODEBB_MCP_PUBLIC_URL` | `http://localhost:<port>` | The origin clients use; the OAuth issuer. MCP lives at `/mcp` |
+| `NODEBB_MCP_STATE_FILE` | `~/.local/state/nodebb-mcp/` | Registered clients, hashed tokens, and each person's forum session; `off` keeps them in memory (everyone signs in again after a restart) |
+
+`NODEBB_ENABLE_WRITES` still applies to everyone; `NODEBB_API_TOKEN` and
+`NODEBB_USERNAME` are not used in this mode.
+
+Before deploying:
+
+- **HTTPS.** OAuth requires an `https://` public URL except on localhost. Put the
+  server behind a TLS proxy (an internal CA is fine) at the root of its own host
+  name.
+- **Raise the forum's IP sign-in limit.** Every person's sign-in reaches NodeBB
+  from this server's IP, and NodeBB locks an IP after `ipLoginAttempts` (20)
+  sign-ins an hour. Raise it in ACP → Settings → User → Account Protection
+  ("Login attempts per IP per hour").
+- **Clients must reach the server.** Claude Code connects directly, so it works
+  inside an air-gapped network; clients that connect from the cloud cannot reach
+  an internal server.
+- Two-factor authentication is not supported for sign-in.
 
 ## Plugins
 

@@ -62,6 +62,8 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
   `DELETE /api/v3/users/:uid/sessions/:uuid` revokes (self or admin).
 - A bearer-token request also creates a server session (`finishLogin`), so a
   user's session list includes token traffic.
+- **Logout** is `POST /logout` with the session cookie and `x-csrf-token`; after
+  it the cookie is a guest's. (The OAuth `/revoke` path relies on this.)
 
 ## Config (`/api/config`)
 
@@ -120,6 +122,8 @@ What `src/session.ts` is built on — all observed with curl on the live forum:
   `category`, rendered `content`. Mark accepted via the topic's `solvedPid`.
 - Write shapes: `POST /api/v3/topics` → the topic (`tid`, `mainPid`, `slug`, …);
   `POST /api/v3/topics/:tid` → the post (`pid`, `tid`, `index`);
+  votes are rate-limited per voter: `upvotesPerUserPerDay` (6 for the same
+  author) and `upvotesPerDay` (20) — "You can only upvote a user 6 times a day";
   `PUT /api/v3/posts/:pid` → the post at top level; votes → `{}` (re-read the
   post for the score). Voting on your own post → 400 "You cannot vote on your own
   post". `DELETE /api/v3/topics/:tid` purges.
