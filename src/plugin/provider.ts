@@ -2,15 +2,17 @@
  * The forum as an OAuth 2.1 authorization server for MCP clients.
  *
  * A client (Claude Code, an IDE) registers itself and sends the person's browser
- * to /mcp/oauth/authorize. They land on the forum's own "Connect" page, signed
+ * to /api/mcp/oauth/authorize. They land on the forum's own "Connect" page, signed
  * in the way they always sign in (password, SSO, two-factor — whatever the
- * forum uses), and allow or refuse. Allowing creates a grant: a NodeBB API token
- * for that person (visible in ACP → API Access), through which their tools act
- * with exactly their forum permissions. No password ever passes through here.
+ * forum uses), and allow or refuse. Allowing yields a one-time code; redeeming it
+ * creates the grant: a NodeBB API token for that person (visible in ACP → API
+ * Access), through which their tools act with exactly their forum permissions.
+ * No password ever passes through here.
  *
  * Access ends when the person disconnects the app (their connections page), an
- * administrator revokes it (ACP → Plugins → MCP, or deletes the API token), or
- * the client revokes its refresh token.
+ * administrator revokes it (ACP → Plugins → MCP, or deletes the API token), the
+ * client revokes its refresh token, the same app connects again (replacing it),
+ * or nobody has used it for 90 days.
  *
  * PKCE (S256) is required and checked by the SDK's token handler; codes are
  * single-use and live a minute; access tokens an hour; refresh tokens rotate.
@@ -76,8 +78,9 @@ export class PluginOAuthProvider implements OAuthServerProvider {
 	}
 
 	/**
-	 * The person answered on the Connect page. Allowing makes a grant and a
-	 * one-time code; either way, the answer is where to send the browser.
+	 * The person answered on the Connect page. Allowing issues a one-time code
+	 * (the connection itself is made when the client redeems it); either way,
+	 * the answer is where to send the browser.
 	 */
 	async decide(requestId: string, person: { uid: number; username: string }, allow: boolean): Promise<URL | undefined> {
 		const pending = await this.store.takePending(requestId);
@@ -89,21 +92,11 @@ export class PluginOAuthProvider implements OAuthServerProvider {
 			back.searchParams.set('error_description', 'The person declined to connect.');
 			return back;
 		}
-		const clientName = pending.clientName || 'An MCP client';
-		const nodebbToken = await this.tokens.generate({
-			uid: person.uid,
-			description: `MCP: ${clientName} (${person.username})`,
-		});
-		const grant = await this.store.createGrant({
+		const code = await this.store.addCode({
 			uid: person.uid,
 			username: person.username,
 			clientId: pending.clientId,
-			clientName,
-			nodebbToken,
-		});
-		const code = await this.store.addCode({
-			grantId: grant.id,
-			clientId: pending.clientId,
+			clientName: pending.clientName || 'An MCP client',
 			redirectUri: pending.redirectUri,
 			codeChallenge: pending.codeChallenge,
 			scopes: pending.scopes,
@@ -146,8 +139,21 @@ export class PluginOAuthProvider implements OAuthServerProvider {
 		if (!code || code.clientId !== client.client_id) throw new InvalidGrantError('Invalid or expired authorization code');
 		if (redirectUri && redirectUri !== code.redirectUri) throw new InvalidGrantError('redirect_uri does not match');
 		if (resource && code.resource && resource.href !== code.resource) throw new InvalidGrantError('resource does not match');
-		if (!(await this.store.getGrant(code.grantId))) throw new InvalidGrantError('The connection is no longer valid');
-		return this.store.issueTokens(code.grantId, client.client_id, code.scopes, code.resource);
+		// Connecting the same app again replaces its earlier connection (and token).
+		const earlier = (await this.store.listGrants(code.uid)).filter(grant => grant.clientId === client.client_id);
+		await Promise.all(earlier.map(grant => this.endGrant(grant.id)));
+		const nodebbToken = await this.tokens.generate({
+			uid: code.uid,
+			description: `MCP: ${code.clientName} (${code.username})`,
+		});
+		const grant = await this.store.createGrant({
+			uid: code.uid,
+			username: code.username,
+			clientId: client.client_id,
+			clientName: code.clientName,
+			nodebbToken,
+		});
+		return this.store.issueTokens(grant.id, client.client_id, code.scopes, code.resource);
 	}
 
 	async exchangeRefreshToken(
@@ -180,7 +186,8 @@ export class PluginOAuthProvider implements OAuthServerProvider {
 			scopes: entry.scopes,
 			expiresAt: Math.floor(entry.expiresAt / 1000),
 			...(entry.resource ? { resource: new URL(entry.resource) } : {}),
-			extra: { grantId: entry.grant.id, uid: entry.grant.uid, username: entry.grant.username },
+			// The verified grant rides along, so the request handler need not read it again.
+			extra: { grantId: entry.grant.id, uid: entry.grant.uid, username: entry.grant.username, grant: entry.grant },
 		};
 	}
 

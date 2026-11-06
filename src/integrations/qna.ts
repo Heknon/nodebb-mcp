@@ -70,21 +70,32 @@ export async function listUnsolved(
 		return { topics: list.slice(0, limit).map(t => toTopicSummary(client, t, true)), degraded: false };
 	}
 
-	const raw = await client.read<Raw>('/recent', { page: opts.page ?? 1 });
-	const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
-	const unanswered = list
-		.map(t => toTopicSummary(client, t, false))
-		// postcount 1 means the opening post and nothing else.
-		.filter(t => t.postcount <= 1)
-		.slice(0, limit);
+	// Most recent topics have replies, so one page rarely holds `limit` without any:
+	// read on, up to five pages, until there are enough.
+	const first = opts.page ?? 1;
+	const unanswered: TopicSummary[] = [];
+	let scanned = 0;
+	for (let page = first; page < first + 5 && unanswered.length < limit; page += 1) {
+		// eslint-disable-next-line no-await-in-loop
+		const raw = await client.read<Raw>('/recent', { page });
+		const list: Raw[] = Array.isArray(raw?.topics) ? raw.topics : [];
+		if (!list.length) break;
+		scanned += list.length;
+		unanswered.push(...list
+			.map(t => toTopicSummary(client, t, false))
+			// postcount 1 means the opening post and nothing else.
+			.filter(t => t.postcount <= 1));
+		const pages = Number(raw?.pagination?.pageCount) || 0;
+		if (pages && page >= pages) break;
+	}
 
 	return {
-		topics: unanswered,
+		topics: unanswered.slice(0, limit),
 		degraded: true,
 		note:
 			`${capabilities.qna.reason ?? 'Q&A plugin not available.'} ` +
 			'Falling back to recent topics with no replies, which approximates "unanswered" ' +
-			'but cannot tell a question from a discussion.',
+			`but cannot tell a question from a discussion (scanned the ${scanned} most recent topics).`,
 	};
 }
 

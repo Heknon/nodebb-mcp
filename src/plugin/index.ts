@@ -1,13 +1,17 @@
 /**
  * nodebb-plugin-mcp: the forum serves MCP itself.
  *
- *   POST /mcp                                        the MCP endpoint (bearer token)
- *   /mcp/oauth/{authorize,token,register,revoke}     OAuth 2.1 + dynamic registration
- *   /.well-known/oauth-authorization-server/mcp      OAuth metadata (RFC 8414)
- *   /.well-known/oauth-protected-resource/mcp        resource metadata (RFC 9728)
+ *   POST /api/mcp                                        the MCP endpoint (bearer token)
+ *   /api/mcp/oauth/{authorize,token,register,revoke}     OAuth 2.1 + dynamic registration
+ *   /.well-known/oauth-authorization-server/api/mcp      OAuth metadata (RFC 8414)
+ *   /.well-known/oauth-protected-resource/api/mcp        resource metadata (RFC 9728)
  *   /mcp/connect          the person allows or refuses an app (forum page, forum login)
  *   /mcp/connections      their connected apps, and how to connect one
  *   /admin/plugins/mcp    settings and every connection (ACP)
+ *
+ * The endpoints live in NodeBB's own API namespace (/api/mcp). Discovery is at
+ * the origin root, as RFC 8414/9728 put it, so it is mounted on the app rather
+ * than the router: a forum under a subpath needs no proxy rewrite for it.
  *
  * The MCP endpoint is stateless (a fresh server per request), so any process of
  * a multi-process forum can answer any request: identity comes from the bearer
@@ -49,7 +53,11 @@ interface Settings {
 	publicWrites: boolean;
 }
 
+/** Where the plugin answers, under the forum's relative path. */
+export const MCP_PATH = '/api/mcp';
 const WRITES_OFF = 'Public writes are off on this forum. An administrator can turn them on in ACP → Plugins → MCP.';
+/** A connection nobody has used for this long has lost its refresh token: end it. */
+const IDLE_GRANT_MS = 90 * 24 * 60 * 60 * 1000;
 const rpcError = (code: number, message: string) => ({ jsonrpc: '2.0', error: { code, message }, id: null });
 
 interface Runtime {
@@ -58,6 +66,8 @@ interface Runtime {
 	provider: PluginOAuthProvider;
 	/** Public forum URL, no trailing slash (links cite it). */
 	url: string;
+	/** The MCP endpoint's public URL (also the OAuth issuer and resource). */
+	endpoint: string;
 	relativePath: string;
 	settings(): Promise<Settings>;
 	configFor(grant: Grant): Promise<Config>;
@@ -68,7 +78,10 @@ let runtime: Runtime | undefined;
 
 /** Where the forum answers this process over loopback, so tool calls skip the public proxy. */
 function loopbackUrl(nconf: { get(key: string): any }, publicUrl: string): string {
-	if (nconf.get('socketPath')) return publicUrl;
+	// NodeBB terminating TLS itself: loopback would be https to 127.0.0.1, whose
+	// certificate cannot match. Go through the public address instead.
+	if (nconf.get('ssl')) return publicUrl;
+	// A unix socket path (in `port`) is not a number: also the public address.
 	const port = [].concat(nconf.get('port') ?? []).map(Number).find(Number.isFinite);
 	if (!port) return publicUrl;
 	const bind = String(nconf.get('bind_address') ?? '');
@@ -91,16 +104,21 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 	const provider = new PluginOAuthProvider(store, tokens, `${url}/mcp/connect`, grant => users.delete(grant.id));
 
 	let cached: { at: number; value: Settings } | undefined;
+	let generation = 0;
 	// NodeBB publishes a settings save to every forum process: re-read at once, everywhere.
 	nbb('./src/pubsub').on('action:settings.set.mcp', () => {
 		cached = undefined;
+		generation += 1;
 	});
 	const settings = async (): Promise<Settings> => {
 		if (cached && Date.now() - cached.at < 60_000) return cached.value;
+		const started = generation;
 		const raw = (await meta.settings.get('mcp')) ?? {};
 		const on = (value: unknown) => value === true || value === 'on' || value === 'true' || value === '1';
-		cached = { at: Date.now(), value: { publicWrites: on(raw.publicWrites) } };
-		return cached.value;
+		const value = { publicWrites: on(raw.publicWrites) };
+		// A save landed while this read was in flight: use it once, but do not cache it.
+		if (started === generation) cached = { at: Date.now(), value };
+		return value;
 	};
 
 	const configFor = async (grant: Grant): Promise<Config> => ({
@@ -131,22 +149,34 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 		return entry;
 	};
 
-	return { nbb, store, provider, url, relativePath, settings, configFor, userFor };
+	return { nbb, store, provider, url, endpoint: `${url}${MCP_PATH}`, relativePath, settings, configFor, userFor };
 }
 
-/** The MCP and OAuth endpoints, as an Express 5 app of their own (NodeBB runs Express 4). */
-function mcpApp(rt: Runtime, trustProxy: unknown): express.Express {
+/** Discovery documents: at the origin root, path-aware (RFC 8414 §3, RFC 9728 §3). */
+function discoveryPaths(rt: Runtime): { authorizationServer: string; protectedResource: string } {
+	const path = new URL(rt.endpoint).pathname;
+	return {
+		authorizationServer: `/.well-known/oauth-authorization-server${path}`,
+		protectedResource: `/.well-known/oauth-protected-resource${path}`,
+	};
+}
+
+/**
+ * The MCP and OAuth endpoints, as an Express 5 app of their own (NodeBB runs Express 4).
+ * `rateLimits: false` (config.json `"mcp": { "rateLimits": false }`, test forums only)
+ * turns off the SDK's per-IP limits on registration, authorization and tokens.
+ */
+function mcpApp(rt: Runtime, rateLimits: boolean): express.Express {
 	const app = express();
 	app.disable('x-powered-by');
-	if (trustProxy !== undefined) app.set('trust proxy', trustProxy);
 
-	const issuer = new URL(`${rt.url}/mcp`);
+	const issuer = new URL(rt.endpoint);
 	const metadata = {
 		issuer: issuer.href,
-		authorization_endpoint: `${rt.url}/mcp/oauth/authorize`,
-		token_endpoint: `${rt.url}/mcp/oauth/token`,
-		registration_endpoint: `${rt.url}/mcp/oauth/register`,
-		revocation_endpoint: `${rt.url}/mcp/oauth/revoke`,
+		authorization_endpoint: `${rt.endpoint}/oauth/authorize`,
+		token_endpoint: `${rt.endpoint}/oauth/token`,
+		registration_endpoint: `${rt.endpoint}/oauth/register`,
+		revocation_endpoint: `${rt.endpoint}/oauth/revoke`,
 		response_types_supported: ['code'],
 		grant_types_supported: ['authorization_code', 'refresh_token'],
 		code_challenge_methods_supported: ['S256'],
@@ -161,22 +191,26 @@ function mcpApp(rt: Runtime, trustProxy: unknown): express.Express {
 		resource_name: 'NodeBB forum (MCP)',
 	};
 
-	// Discovery lives at the origin root; on a forum under a subpath, the proxy must pass these through.
-	app.use(`/.well-known/oauth-authorization-server${rt.relativePath}/mcp`, metadataHandler(metadata));
-	app.use(`/.well-known/oauth-protected-resource${rt.relativePath}/mcp`, metadataHandler(resourceMetadata));
-	app.use('/mcp/oauth/authorize', authorizationHandler({ provider: rt.provider }));
-	app.use('/mcp/oauth/token', tokenHandler({ provider: rt.provider }));
-	app.use('/mcp/oauth/register', clientRegistrationHandler({ clientsStore: rt.provider.clientsStore }));
-	app.use('/mcp/oauth/revoke', revocationHandler({ provider: rt.provider }));
+	// Discovery: these requests arrive from the app (origin root, full path).
+	const discovery = discoveryPaths(rt);
+	app.use(discovery.authorizationServer, metadataHandler(metadata));
+	app.use(discovery.protectedResource, metadataHandler(resourceMetadata));
+	// The rest arrive from NodeBB's router (paths relative to the forum's root).
+	const limits = rateLimits ? {} : { rateLimit: false as const };
+	app.use(`${MCP_PATH}/oauth/authorize`, authorizationHandler({ provider: rt.provider, ...limits }));
+	app.use(`${MCP_PATH}/oauth/token`, tokenHandler({ provider: rt.provider, ...limits }));
+	app.use(`${MCP_PATH}/oauth/register`, clientRegistrationHandler({ clientsStore: rt.provider.clientsStore, ...limits }));
+	app.use(`${MCP_PATH}/oauth/revoke`, revocationHandler({ provider: rt.provider, ...limits }));
 
 	const bearer = requireBearerAuth({
 		verifier: rt.provider,
-		resourceMetadataUrl: `${new URL(rt.url).origin}/.well-known/oauth-protected-resource${new URL(rt.url).pathname.replace(/\/$/, '')}/mcp`,
+		resourceMetadataUrl: `${new URL(rt.url).origin}${discovery.protectedResource}`,
 	});
 
-	app.post('/mcp', bearer, express.json({ limit: '4mb' }), async (req: Request, res: Response) => {
+	// NodeBB has normally parsed the body already (its own size limit applies); this covers the rest.
+	app.post(MCP_PATH, bearer, express.json(), async (req: Request, res: Response) => {
 		try {
-			const grant = await rt.store.getGrant(String(req.auth?.extra?.grantId ?? ''));
+			const grant = req.auth?.extra?.grant as Grant | undefined;
 			if (!grant) {
 				res.status(401).json(rpcError(-32001, 'This connection has ended; connect again'));
 				return;
@@ -196,7 +230,7 @@ function mcpApp(rt: Runtime, trustProxy: unknown): express.Express {
 			process.stderr.write(`[nodebb-plugin-mcp] MCP request failed: ${err instanceof Error ? err.stack : String(err)}\n`);
 		}
 	});
-	app.all('/mcp', (_req: Request, res: Response) => {
+	app.all(MCP_PATH, (_req: Request, res: Response) => {
 		// No server-initiated streams or sessions to resume or end: this endpoint is stateless.
 		res.set('Allow', 'POST').status(405).json(rpcError(-32000, 'Method not allowed: this MCP endpoint is stateless (POST only)'));
 	});
@@ -206,10 +240,29 @@ function mcpApp(rt: Runtime, trustProxy: unknown): express.Express {
 	return app;
 }
 
-/** Paths the Express 5 app owns; everything else stays NodeBB's. */
-function isMcpPath(path: string): boolean {
-	return path === '/mcp' || path.startsWith('/mcp/oauth/') ||
-		path.startsWith('/.well-known/oauth-authorization-server/') || path.startsWith('/.well-known/oauth-protected-resource/');
+/**
+ * Hand a request to the Express 5 app, and back to NodeBB untouched if it falls
+ * through (it never should: the app answers everything it is given).
+ */
+function handOff(app: express.Express) {
+	return (req: any, res: any, next: NextFunction) => {
+		const requestProto = Object.getPrototypeOf(req);
+		const responseProto = Object.getPrototypeOf(res);
+		app(req, res, (err?: unknown) => {
+			Object.setPrototypeOf(req, requestProto);
+			Object.setPrototypeOf(res, responseProto);
+			next(err);
+		});
+	};
+}
+
+/** Never let another site frame the Connect page (clickjacking the Allow button). */
+function forbidFraming(res: any): void {
+	res.set('X-Frame-Options', 'DENY');
+	const csp = res.get('Content-Security-Policy');
+	res.set('Content-Security-Policy', csp
+		? (/frame-ancestors[^;]*/i.test(csp) ? csp.replace(/frame-ancestors[^;]*/i, "frame-ancestors 'none'") : `${csp}; frame-ancestors 'none'`)
+		: "frame-ancestors 'none'");
 }
 
 const isoDate = (ms?: number) => (ms ? new Date(ms).toISOString() : '');
@@ -233,22 +286,51 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 	const routeHelpers = nbb('./src/routes/helpers');
 	const user = nbb('./src/user');
 	const meta = nbb('./src/meta');
+	const nconf = nbb('nconf');
 
-	// The MCP + OAuth endpoints: handed to the Express 5 app, then back to NodeBB untouched.
-	const app = mcpApp(rt, params.app?.get?.('trust proxy'));
+	const app = mcpApp(rt, nconf.get('mcp:rateLimits') !== false);
+	const toApp = handOff(app);
+	// NodeBB sets its 'trust proxy' when it starts listening, after this hook: copy it on first use,
+	// or the OAuth rate limits would see every client as the proxy.
+	let trustSynced = false;
+	const syncTrust = () => {
+		if (trustSynced) return;
+		trustSynced = true;
+		const trust = params.app?.get?.('trust proxy');
+		if (trust !== undefined) app.set('trust proxy', trust);
+	};
+	// The MCP + OAuth endpoints, in NodeBB's API namespace. (NodeBB's own /api/mcp/connect…,
+	// the JSON side of the pages, stays NodeBB's.)
 	router.use((req: any, res: any, next: NextFunction) => {
-		if (!isMcpPath(req.path)) {
+		if (req.path !== MCP_PATH && !req.path.startsWith(`${MCP_PATH}/oauth/`)) {
 			next();
 			return;
 		}
-		const requestProto = Object.getPrototypeOf(req);
-		const responseProto = Object.getPrototypeOf(res);
-		app(req, res, (err?: unknown) => {
-			Object.setPrototypeOf(req, requestProto);
-			Object.setPrototypeOf(res, responseProto);
-			next(err);
-		});
+		syncTrust();
+		toApp(req, res, next);
 	});
+	// Discovery, at the origin root: on the app, ahead of NodeBB's router (which sits under the
+	// forum's subpath, if any).
+	const discovery = discoveryPaths(rt);
+	params.app?.use?.((req: any, res: any, next: NextFunction) => {
+		if (req.path !== discovery.authorizationServer && req.path !== discovery.protectedResource) {
+			next();
+			return;
+		}
+		syncTrust();
+		toApp(req, res, next);
+	});
+
+	// Connections nobody has used for 90 days have lost their refresh tokens: end them (one process does it).
+	if (nconf.get('runJobs')) {
+		const sweep = () => {
+			rt.store.idleGrants(IDLE_GRANT_MS)
+				.then(idle => Promise.all(idle.map(grant => rt.provider.endGrant(grant.id).catch(() => {}))))
+				.catch(err => process.stderr.write(`[nodebb-plugin-mcp] sweeping idle connections failed: ${String(err)}\n`));
+		};
+		setTimeout(sweep, 60_000).unref();
+		setInterval(sweep, 6 * 60 * 60 * 1000).unref();
+	}
 
 	const formMiddleware = [middleware.authenticateRequest, middleware.applyCSRF, middleware.ensureLoggedIn];
 	const usernameOf = async (uid: number) => String(await user.getUserField(uid, 'username'));
@@ -263,6 +345,7 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 		} catch {
 			redirectHost = pending?.redirectUri ?? '';
 		}
+		forbidFraming(res);
 		res.render('mcp/connect', {
 			title: 'Connect an app',
 			found: Boolean(pending),
@@ -292,7 +375,7 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 		const grants = await rt.store.listGrants(req.uid);
 		res.render('mcp/connections', {
 			title: 'Connected apps',
-			endpoint: `${rt.url}/mcp`,
+			endpoint: rt.endpoint,
 			grants: grants.map(view),
 			hasGrants: grants.length > 0,
 		});
@@ -308,7 +391,7 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 		const grants = await rt.store.listGrants();
 		res.render('admin/plugins/mcp', {
 			title: 'MCP',
-			endpoint: `${rt.url}/mcp`,
+			endpoint: rt.endpoint,
 			grants: grants.map(view),
 			hasGrants: grants.length > 0,
 		});

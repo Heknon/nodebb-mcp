@@ -125,7 +125,7 @@ caches the session in a 0600 file so restarts don't count against NodeBB's
 login rate limits. See the reference for the observed login behaviour.
 
 **The NodeBB plugin** (`src/plugin/`, `library.cjs`, `plugin.json`, `templates/`,
-`public/`): the forum serves MCP at `/mcp` and is its own OAuth 2.1
+`public/`): the forum serves MCP at `/api/mcp` (inside NodeBB's API namespace) and is its own OAuth 2.1
 authorization server. Consent is a forum page (`/mcp/connect`) behind the
 forum's own login (so SSO and 2FA just work); allowing mints a NodeBB API token
 for the person, and their tools run the shared code over the forum's own HTTP
@@ -136,7 +136,16 @@ per request), so multi-process forums need nothing extra. A grant ends when the
 person disconnects it (`/mcp/connections`), an admin revokes it (ACP) or deletes
 its API token, or the client revokes its refresh token. Things that bit:
 - The SDK's `mcpAuthRouter` mounts `/register` at the origin root — NodeBB's
-  sign-up page. Mount the SDK's individual handlers under `/mcp/oauth/` instead.
+  sign-up page. Mount the SDK's individual handlers under `/api/mcp/oauth/` instead.
+- Discovery (`/.well-known/oauth-*<forum path>/api/mcp`) is at the origin root:
+  mount it on `params.app` in `static:app.load` (ahead of NodeBB's router, which
+  sits under the forum's subpath), the rest on `params.router`.
+- NodeBB sets `trust proxy` in `listen()`, *after* `static:app.load`: read it on
+  first request, not at load.
+- Make the NodeBB API token when the code is **redeemed**, not on Allow, or every
+  abandoned Allow leaves a live full-account token behind.
+- NodeBB's own body parser has read the body before plugin routes run (its size
+  limit applies; a 413 is NodeBB's HTML page).
 - NodeBB is Express 4, the SDK Express 5: only the plugin's own paths are handed
   to an Express 5 sub-app, and request/response prototypes are restored on the
   way out. Copy NodeBB's `trust proxy` into it, or rate limits see the proxy.
@@ -170,7 +179,7 @@ src/server.ts           McpServer + instructions
 src/config.ts           env → Config for stdio (the plugin builds its Config from NodeBB's nconf + ACP settings)
 src/client.ts           fetch wrapper: Read API, v3 envelope unwrap, write(), _uid, session retry
 src/session.ts          password sign-in: cookie jar, CSRF, renewal, refusal memory, session file
-src/plugin/             the NodeBB plugin: index (routes, pages, ACP, stateless /mcp),
+src/plugin/             the NodeBB plugin: index (routes, pages, ACP, stateless /api/mcp),
                         provider (OAuthServerProvider: consent → NodeBB API token), store (db-backed)
 library.cjs, plugin.json, templates/, public/   what NodeBB loads (CommonJS bridge, hooks, pages, ACP JS)
 src/capabilities.ts     probes + verified identity + writes/triage capabilities, TTL-cached

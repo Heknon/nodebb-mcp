@@ -12,7 +12,7 @@ import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 
 import { TestOAuthClient, tryConnect } from '../oauth-harness.js';
-import { e2e } from './harness.js';
+import { e2e, revokeTestConnections } from './harness.js';
 
 const { fixture: fx, opts: forumOpts } = await e2e({ needs: 'full' });
 
@@ -23,14 +23,19 @@ try {
 	chromium = undefined;
 }
 let FORUM;
+let ENDPOINT;
 let opts = forumOpts.skip ? forumOpts : chromium ? {} : { skip: 'Playwright is not installed' };
 if (!opts.skip) {
-	const prm = await fetch(`${fx.url}/.well-known/oauth-protected-resource/mcp`).catch(() => undefined);
-	if (prm?.ok) FORUM = (await prm.json()).resource.replace(/\/mcp$/, '');
+	const prm = await fetch(`${fx.url}/.well-known/oauth-protected-resource/api/mcp`).catch(() => undefined);
+	if (prm?.ok) {
+		ENDPOINT = (await prm.json()).resource;
+		FORUM = ENDPOINT.replace(/\/api\/mcp$/, '');
+	}
 	else opts = { skip: 'nodebb-plugin-mcp is not active on the test forum' };
 }
 
 const RUN = `r${Date.now().toString(36)}`;
+test.after(() => revokeTestConnections(fx));
 
 /** A client's redirect target that captures the code. */
 async function callbackServer() {
@@ -60,7 +65,7 @@ test('a person connects an app: forum login, the Connect page, Allow, and back t
 	t.after(async () => { callback.close(); await browser.close(); });
 
 	const oauth = new TestOAuthClient(`e2e browser ${RUN}`, callback.url);
-	const first = await tryConnect(FORUM, oauth);
+	const first = await tryConnect(ENDPOINT, oauth);
 	assert.equal(first.client, null);
 
 	// Not signed in yet: the forum's own login page comes first, then the Connect page.
@@ -79,7 +84,7 @@ test('a person connects an app: forum login, the Connect page, Allow, and back t
 	assert.ok(params.get('code'), `the app got a code (${params})`);
 	await first.transport.finishAuth(params.get('code'));
 
-	const second = await tryConnect(FORUM, oauth);
+	const second = await tryConnect(ENDPOINT, oauth);
 	assert.ok(second.client, 'connected');
 	const result = await second.client.callTool({ name: 'forum_capabilities', arguments: {} });
 	assert.match(result.content[0].text, /Acting as:\*\* e2e_reporter/);
@@ -103,12 +108,12 @@ test('an administrator turns public writes on in the ACP, and connected apps get
 
 	// Connect an app through the real pages.
 	const oauth = new TestOAuthClient(`e2e writes ${RUN}`, callback.url);
-	const first = await tryConnect(FORUM, oauth);
+	const first = await tryConnect(ENDPOINT, oauth);
 	const person = await signIn(await browser.newContext(), 'e2e_reporter', fx.password);
 	await person.goto(oauth.authorizationUrl.href, { waitUntil: 'networkidle' });
 	await person.locator('form[action$="/mcp/connect"] button[value="allow"]').click();
 	await first.transport.finishAuth((await callback.received).get('code'));
-	const { client } = await tryConnect(FORUM, oauth);
+	const { client } = await tryConnect(ENDPOINT, oauth);
 	t.after(() => client.close());
 	const names = async () => (await client.listTools()).tools.map(tool => tool.name);
 	assert.ok(!(await names()).includes('create_topic'), 'off');

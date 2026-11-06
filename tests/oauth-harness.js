@@ -116,8 +116,9 @@ export async function allowInBrowser(authorizationUrl, { forumUrl, username, pas
 }
 
 /** Connect an MCP client, re-using `oauth`'s saved tokens; null when sign-in is needed. */
-export async function tryConnect(baseUrl, oauth) {
-	const transport = new StreamableHTTPClientTransport(new URL('/mcp', baseUrl), { authProvider: oauth });
+/** Connect an MCP client to `endpoint` (the forum's /api/mcp), re-using `oauth`'s saved tokens. */
+export async function tryConnect(endpoint, oauth) {
+	const transport = new StreamableHTTPClientTransport(new URL(endpoint), { authProvider: oauth });
 	const client = new Client({ name: oauth.name, version: '0.0.0' });
 	try {
 		await client.connect(transport);
@@ -132,17 +133,17 @@ export async function tryConnect(baseUrl, oauth) {
  * The whole first connection: the client finds it must sign in, the person
  * signs in in the "browser", the client finishes the exchange and reconnects.
  */
-export async function connectWithSignIn(baseUrl, credentials, oauth = new TestOAuthClient()) {
-	const first = await tryConnect(baseUrl, oauth);
+export async function connectWithSignIn(endpoint, credentials, oauth = new TestOAuthClient()) {
+	const first = await tryConnect(endpoint, oauth);
 	if (first.client) return wrap(first.client, oauth);
-	const signIn = await allowInBrowser(oauth.authorizationUrl, { forumUrl: baseUrl, ...credentials });
+	const signIn = await allowInBrowser(oauth.authorizationUrl, credentials);
 	if (!signIn.code) {
 		const err = new Error(`sign-in did not return a code (HTTP ${signIn.status})`);
 		err.signIn = signIn;
 		throw err;
 	}
 	await first.transport.finishAuth(signIn.code);
-	const second = await tryConnect(baseUrl, oauth);
+	const second = await tryConnect(endpoint, oauth);
 	if (!second.client) throw new Error('still unauthorized after signing in');
 	return wrap(second.client, oauth, signIn);
 }

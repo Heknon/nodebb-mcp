@@ -148,3 +148,18 @@ export async function eventually(fn, { timeoutMs = 10_000, intervalMs = 250 } = 
 	}
 	return last;
 }
+
+/**
+ * End the MCP connections the plugin suites made (apps named "e2e …" — on the test
+ * forum only test clients are), so their NodeBB API tokens do not pile up.
+ */
+export async function revokeTestConnections(fixture) {
+	const headers = { authorization: `Bearer ${fixture.tokens.admin}` };
+	const res = await fetch(`${fixture.url}/api/admin/plugins/mcp`, { headers }).catch(() => undefined);
+	if (!res?.ok) return;
+	const { grants = [] } = await res.json();
+	for (const grant of grants.filter(g => /^e2e /.test(g.clientName))) {
+		// eslint-disable-next-line no-await-in-loop
+		await fetch(`${fixture.url}/api/v3/plugins/mcp/grants/${grant.id}`, { method: 'DELETE', headers });
+	}
+}

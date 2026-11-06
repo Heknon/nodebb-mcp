@@ -91,10 +91,26 @@ nodebb_stop() {
 	done
 }
 
+# Test forum only: e2e runs register many OAuth clients from 127.0.0.1, past the
+# per-IP limits a real forum keeps (config.json "mcp": { "rateLimits": false }).
+test_config() {
+	node -e '
+		const fs = require("fs");
+		const file = process.argv[1];
+		const config = JSON.parse(fs.readFileSync(file, "utf8"));
+		if (!(config.mcp && config.mcp.rateLimits === false)) {
+			config.mcp = Object.assign({}, config.mcp, { rateLimits: false });
+			fs.writeFileSync(file, JSON.stringify(config, null, 4) + "\n");
+			console.error("▶ config.json: mcp.rateLimits = false (test forum; takes effect on restart)");
+		}
+	' "$NODEBB_DIR/config.json"
+}
+
 cmd_up() {
 	[ -d "$NODEBB_DIR" ] || die "no NodeBB at $NODEBB_DIR. Run: e2e/forum.sh provision"
 	redis_up
 	link_shotef
+	test_config
 	if [ "$(http_code "$NODEBB_URL/api/config")" = 200 ]; then
 		say "NodeBB already up at $NODEBB_URL"
 		return 0

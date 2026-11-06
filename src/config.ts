@@ -122,6 +122,13 @@ function sessionFileFromEnv(env: NodeJS.ProcessEnv, url: string, username: strin
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
+	if (env.NODEBB_MCP_HTTP_PORT) {
+		throw new ConfigError(
+			'NODEBB_MCP_HTTP_PORT: the separate shared HTTP server was replaced by the NodeBB plugin. ' +
+				'Install nodebb-plugin-mcp on the forum and connect clients to <forum>/api/mcp; ' +
+				'unset NODEBB_MCP_HTTP_PORT to run this over stdio.',
+		);
+	}
 	const url = env.NODEBB_URL?.trim();
 	if (!url) {
 		throw new ConfigError(

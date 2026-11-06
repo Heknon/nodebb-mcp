@@ -20,7 +20,7 @@ If a path below doesn't exist, discover it rather than assume
 | Redis data | `/home/user/NodeBB/redis/dump.rdb` (RDB) |
 | NodeBB log (forum.sh) | `/tmp/nodebb-e2e.log` |
 | Forum | <http://127.0.0.1:4567>, admin `admin` / `Test1234!`. Its configured `url` is `http://localhost:4567`: OAuth issuer, resource and links use that host |
-| MCP endpoint (this plugin) | <http://localhost:4567/mcp>; ACP → Plugins → MCP; people's page `/mcp/connections` |
+| MCP endpoint (this plugin) | <http://localhost:4567/api/mcp>; ACP → Plugins → MCP; people's page `/mcp/connections`. `config.json` has `"mcp": { "rateLimits": false }` (set by `forum.sh up`): e2e runs register many OAuth clients from one IP |
 | e2e fixture (ids + API tokens) | `e2e/.fixture.json` (gitignored; written by `e2e/seed.mjs`) |
 | Chromium (if ever needed) | `/opt/pw-browsers/chromium` |
 
@@ -77,7 +77,7 @@ The forum serves this repo as `nodebb-plugin-mcp`. After changing it:
 Connect a real client to it (sign in with any `e2e_*` user and `fixture.password`):
 
 ```bash
-claude mcp add --transport http forum http://localhost:4567/mcp   # in a throwaway HOME
+claude mcp add --transport http forum http://localhost:4567/api/mcp   # in a throwaway HOME
 ```
 
 ## 4. Traps (each one cost time here)

@@ -23,13 +23,14 @@ npm install github:heknon/nodebb-mcp     # or a local checkout's path; it builds
 (It is not on the npm registry yet. Installing from GitHub needs read access to
 the repository.)
 
-The forum now serves MCP at `https://forum.example.com/mcp`. **ACP → Plugins →
+The forum now serves MCP at `https://forum.example.com/api/mcp`, inside NodeBB's
+own API. **ACP → Plugins →
 MCP** shows that address, the settings, and every connected app.
 
 ## Connect
 
 ```bash
-claude mcp add --transport http forum https://forum.example.com/mcp
+claude mcp add --transport http forum https://forum.example.com/api/mcp
 ```
 
 The first time the client connects, the browser opens the forum: the person
@@ -109,7 +110,7 @@ drafts the reply into a note for a person to post).
   administrator revokes it in ACP → Plugins → MCP, or deletes its API token; or
   the client revokes its own token. Any of these cuts it off on the next request.
 - **Standard OAuth.** The forum is the authorization server: discovery
-  (`/.well-known/oauth-authorization-server/mcp`), dynamic client registration,
+  (`/.well-known/oauth-authorization-server/api/mcp`), dynamic client registration,
   PKCE, one-time codes, hourly access tokens and rotating refresh tokens, all
   stored hashed in the forum's database. Nothing outside the forum is involved,
   so it works air-gapped.
@@ -128,9 +129,13 @@ Before going live:
 - **HTTPS.** OAuth requires the forum to be served over `https://` (plain http
   is accepted only on localhost).
 - **Forums under a subpath** (`https://example.com/forum`): OAuth discovery
-  lives at the origin root, so the reverse proxy must also send
-  `/.well-known/oauth-authorization-server/forum/mcp` and
-  `/.well-known/oauth-protected-resource/forum/mcp` to NodeBB.
+  lives at the origin root, so the reverse proxy must also pass
+  `/.well-known/oauth-authorization-server/forum/api/mcp` and
+  `/.well-known/oauth-protected-resource/forum/api/mcp` to NodeBB, as they are
+  (the plugin answers them at the root; no rewriting).
+- **Rate limits.** Client registration, authorization and token requests are
+  limited per IP (the MCP SDK's defaults: 20 registrations an hour). Behind a
+  proxy, set NodeBB's `trust_proxy` so that is per person, not per proxy.
 - **Content-Security-Policy.** If you turned on NodeBB's CSP, its `form-action`
   must allow the clients' callback addresses (e.g. `http://localhost:*` for
   Claude Code), or the browser blocks the way back after **Allow**.

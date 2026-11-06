@@ -8,6 +8,7 @@
  *   mcp:grant:<id>           one person + one client: uid and the NodeBB API token
  *   mcp:grants               every grant id, by creation time (the ACP list)
  *   mcp:grants:uid:<uid>     one person's grant ids (their connections page)
+ *   mcp:grants:lastUsed      grant ids by last use (shown in lists; idle grants are swept)
  *   mcp:token:<sha256>       an access or refresh token; only its hash is stored
  *   mcp:grant:<id>:tokens    the grant's token hashes, scored by expiry
  *
@@ -31,13 +32,13 @@ export interface Db {
 	getObject(key: string): Promise<Record<string, unknown> | null>;
 	getObjects(keys: string[]): Promise<(Record<string, unknown> | null)[]>;
 	setObject(key: string, data: Record<string, unknown>): Promise<void>;
-	setObjectField(key: string, field: string, value: unknown): Promise<void>;
 	incrObjectField(key: string, field: string): Promise<number>;
 	delete(key: string): Promise<void>;
 	deleteAll(keys: string[]): Promise<void>;
 	expireAt(key: string, timestampSeconds: number): Promise<void>;
 	sortedSetAdd(key: string, score: number, value: string): Promise<void>;
 	sortedSetRemove(key: string, value: string): Promise<void>;
+	sortedSetScore(key: string, value: string): Promise<number | null>;
 	sortedSetsRemoveRangeByScore(keys: string[], min: number | '-inf', max: number | '+inf'): Promise<void>;
 	getSortedSetRange(key: string, start: number, stop: number): Promise<string[]>;
 	getSortedSetRevRange(key: string, start: number, stop: number): Promise<string[]>;
@@ -55,9 +56,15 @@ export interface PendingAuthorization {
 	expiresAt: number;
 }
 
+/**
+ * A one-time code. The grant (and its NodeBB API token) is made only when the
+ * client redeems it, so an Allow that never comes back leaves nothing behind.
+ */
 export interface AuthorizationCode {
-	grantId: string;
+	uid: number;
+	username: string;
 	clientId: string;
+	clientName: string;
 	redirectUri: string;
 	codeChallenge: string;
 	scopes: string[];
@@ -197,11 +204,12 @@ export class PluginStore {
 
 	async getGrant(id: string): Promise<Grant | undefined> {
 		if (!isId(id)) return undefined;
-		const object = await this.db.getObject(`mcp:grant:${id}`);
-		if (typeof object?.data !== 'string') return undefined;
-		const grant = JSON.parse(object.data) as Grant;
-		const lastUsed = Number(object.lastUsedAt);
-		return lastUsed ? { ...grant, lastUsedAt: lastUsed } : grant;
+		const [grant, lastUsed] = await Promise.all([
+			this.read<Grant>(`mcp:grant:${id}`),
+			this.db.sortedSetScore('mcp:grants:lastUsed', id),
+		]);
+		if (!grant) return undefined;
+		return lastUsed ? { ...grant, lastUsedAt: Number(lastUsed) } : grant;
 	}
 
 	/** Newest first: everyone's (the ACP), or one person's. */
@@ -211,10 +219,38 @@ export class PluginStore {
 		return grants.filter((grant): grant is Grant => Boolean(grant));
 	}
 
-	/** Note use, at most once a minute (the ACP shows it). */
+	/**
+	 * Note use, at most once a minute (lists show it; idle grants are swept). A
+	 * sorted set, not a field of the grant: a touch racing endGrant can then only
+	 * leave a stray member, which the sweep removes, never a recreated grant key.
+	 */
 	async touchGrant(grant: Grant): Promise<void> {
 		if (grant.lastUsedAt && this.now() - grant.lastUsedAt < 60_000) return;
-		await this.db.setObjectField(`mcp:grant:${grant.id}`, 'lastUsedAt', this.now());
+		await this.db.sortedSetAdd('mcp:grants:lastUsed', this.now(), grant.id);
+	}
+
+	/**
+	 * Grants unused for `maxIdleMs` (their refresh tokens have lapsed by then), for
+	 * the caller to end with everything they hold; stray index entries are dropped.
+	 */
+	async idleGrants(maxIdleMs: number): Promise<Grant[]> {
+		const cutoff = this.now() - maxIdleMs;
+		const idle: Grant[] = [];
+		for (const id of await this.db.getSortedSetRange('mcp:grants', 0, -1)) {
+			// eslint-disable-next-line no-await-in-loop
+			const grant = await this.getGrant(id);
+			if (!grant) {
+				// eslint-disable-next-line no-await-in-loop
+				await this.db.sortedSetRemove('mcp:grants', id);
+				continue;
+			}
+			if ((grant.lastUsedAt ?? grant.createdAt) < cutoff) idle.push(grant);
+		}
+		for (const id of await this.db.getSortedSetRange('mcp:grants:lastUsed', 0, -1)) {
+			// eslint-disable-next-line no-await-in-loop
+			if (!(await this.read(`mcp:grant:${id}`))) await this.db.sortedSetRemove('mcp:grants:lastUsed', id);
+		}
+		return idle;
 	}
 
 	/** End a grant and every token it issued. Returns it, so the caller can drop its NodeBB token. */
@@ -225,6 +261,7 @@ export class PluginStore {
 		await this.db.deleteAll([...tokens.map(t => `mcp:token:${t}`), `mcp:grant:${id}:tokens`, `mcp:grant:${id}`]);
 		await this.db.sortedSetRemove('mcp:grants', id);
 		await this.db.sortedSetRemove(`mcp:grants:uid:${grant.uid}`, id);
+		await this.db.sortedSetRemove('mcp:grants:lastUsed', id);
 		return grant;
 	}
 

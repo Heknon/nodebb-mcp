@@ -33,6 +33,7 @@ function memoryDb() {
 		async expireAt() {},
 		async sortedSetAdd(key, score, value) { zset(key).set(String(value), score); },
 		async sortedSetRemove(key, value) { zset(key).delete(String(value)); },
+		async sortedSetScore(key, value) { return zset(key).has(String(value)) ? zset(key).get(String(value)) : null; },
 		async sortedSetsRemoveRangeByScore(keys, min, max) {
 			const lo = min === '-inf' ? -Infinity : min;
 			const hi = max === '+inf' ? Infinity : max;
@@ -62,23 +63,58 @@ async function connected(store, provider, uid = 8, username = 'maintainer') {
 	return { client, request, code: back.searchParams.get('code'), back };
 }
 
-test('consent: allowing makes a NodeBB token for the person and a one-time code back to the client', async () => {
+test('consent: allowing gives a one-time code; redeeming it makes the connection and its NodeBB token', async () => {
 	const tokens = nodebbTokens();
 	const store = new PluginStore(memoryDb());
 	const provider = new PluginOAuthProvider(store, tokens, 'https://forum.example/mcp/connect');
 	const { client, request, code, back } = await connected(store, provider);
 	assert.equal(back.origin + back.pathname, 'http://localhost:9/cb');
 	assert.equal(back.searchParams.get('state'), 's');
-	assert.deepEqual([...tokens.live.values()], [{ uid: 8, description: 'MCP: Claude Code (maintainer)' }]);
+	assert.equal(tokens.live.size, 0, 'an Allow that is never redeemed leaves no token behind');
+	assert.deepEqual(await store.listGrants(), []);
 
 	assert.equal(await provider.decide(request, { uid: 8, username: 'maintainer' }, true), undefined, 'a request is answered once');
 	assert.equal(await provider.challengeForAuthorizationCode(client, code), 'c');
 	const issued = await provider.exchangeAuthorizationCode(client, code);
+	assert.deepEqual([...tokens.live.values()], [{ uid: 8, description: 'MCP: Claude Code (maintainer)' }]);
 	assert.ok(issued.access_token && issued.refresh_token);
 	await assert.rejects(provider.exchangeAuthorizationCode(client, code), /Invalid or expired authorization code/, 'codes are single-use');
 
 	const auth = await provider.verifyAccessToken(issued.access_token);
 	assert.equal(auth.extra.uid, 8);
+});
+
+test('connecting the same app again replaces its earlier connection and token', async () => {
+	const tokens = nodebbTokens();
+	const store = new PluginStore(memoryDb());
+	const provider = new PluginOAuthProvider(store, tokens, 'https://forum.example/mcp/connect');
+	const first = await connected(store, provider);
+	const old = await provider.exchangeAuthorizationCode(first.client, first.code);
+	// The same client authorizes again (lost its tokens, say).
+	const res = { redirect: (_s, to) => { res.to = to; } };
+	await provider.authorize(first.client, { redirectUri: 'http://localhost:9/cb', codeChallenge: 'c', scopes: [] }, res);
+	const back = await provider.decide(new URL(res.to).searchParams.get('request'), { uid: 8, username: 'maintainer' }, true);
+	await provider.exchangeAuthorizationCode(first.client, back.searchParams.get('code'));
+	assert.equal((await store.listGrants(8)).length, 1);
+	assert.equal(tokens.live.size, 1);
+	await assert.rejects(provider.verifyAccessToken(old.access_token), /Invalid, expired or revoked/);
+});
+
+test('connections nobody has used for the idle period are found for ending; used ones are not', async () => {
+	let now = Date.now();
+	const store = new PluginStore(memoryDb(), () => now);
+	const provider = new PluginOAuthProvider(store, nodebbTokens(), 'https://forum.example/mcp/connect');
+	const a = await connected(store, provider, 8, 'maintainer');
+	const issuedA = await provider.exchangeAuthorizationCode(a.client, a.code);
+	const b = await connected(store, provider, 9, 'outsider');
+	await provider.exchangeAuthorizationCode(b.client, b.code);
+	now += 89 * 24 * 60 * 60 * 1000;
+	await provider.verifyAccessToken(issuedA.access_token).catch(() => {}); // expired by now; no touch
+	const [grantA] = await store.listGrants(8);
+	await store.touchGrant(grantA);
+	now += 2 * 24 * 60 * 60 * 1000;
+	const idle = await store.idleGrants(90 * 24 * 60 * 60 * 1000);
+	assert.deepEqual(idle.map(grant => grant.username), ['outsider']);
 });
 
 test('two processes racing for the same code: exactly one wins', async () => {

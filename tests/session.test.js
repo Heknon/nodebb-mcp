@@ -44,6 +44,10 @@ test('config: username and password go together; a token wins over them', () => 
 	assert.equal(new NodeBBClient(loadConfig({ NODEBB_URL: 'http://x' })).authMode, 'none');
 });
 
+test('config: the removed shared HTTP server is refused loudly, pointing at the plugin', () => {
+	assert.throws(() => loadConfig({ NODEBB_URL: 'http://x', NODEBB_MCP_HTTP_PORT: '8799' }), /replaced by the NodeBB plugin.*\/api\/mcp/);
+});
+
 test('config: the session file defaults to a per-forum, per-user cache file, and can be turned off', () => {
 	const a = loadConfig({ NODEBB_URL: 'http://f.example', XDG_CACHE_HOME: '/c', ...maintainer });
 	assert.match(a.sessionFile, /^\/c\/nodebb-mcp\/session-[0-9a-f]{16}\.json$/);
