@@ -1,6 +1,6 @@
 {
   "name": "nodebb-plugin-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP for NodeBB: the forum serves MCP at /mcp, and each person connects their AI client with their own forum account. Answers, investigations, and Shotef ticket work, within their forum permissions.",
   "type": "module",
   "bin": {
