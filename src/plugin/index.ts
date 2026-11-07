@@ -297,7 +297,11 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 		if (trustSynced) return;
 		trustSynced = true;
 		const trust = params.app?.get?.('trust proxy');
-		if (trust !== undefined) app.set('trust proxy', trust);
+		// A bare `true` trusts every X-Forwarded-For hop, so anyone could forge a new IP per
+		// request and step around the per-IP limits (express-rate-limit logs
+		// ERR_ERL_PERMISSIVE_TRUST_PROXY for it). Trust the nearest proxy only; a forum
+		// behind more proxies sets NodeBB's trust_proxy to that hop count.
+		if (trust !== undefined) app.set('trust proxy', trust === true ? 1 : trust);
 	};
 	// The MCP + OAuth endpoints, in NodeBB's API namespace. (NodeBB's own /api/mcp/connect…,
 	// the JSON side of the pages, stays NodeBB's.)
