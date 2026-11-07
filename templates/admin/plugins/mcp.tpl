@@ -25,6 +25,15 @@
 
 			<div class="card mb-3">
 				<div class="card-body">
+					<h5 class="fw-bold">Connection test</h5>
+					<p class="form-text">Tools act by calling the forum's own API from inside the forum process: first over loopback, then through the public URL. This checks each step from the server's side and explains any failure.</p>
+					<button id="mcp-diagnose" class="btn btn-outline-primary"><i class="fa fa-stethoscope"></i> Test connection</button>
+					<div id="mcp-diagnostics" class="mt-3"></div>
+				</div>
+			</div>
+
+			<div class="card mb-3">
+				<div class="card-body">
 					<h5 class="fw-bold">Connections</h5>
 					{{{ if hasGrants }}}
 					<table class="table table-sm align-middle">

@@ -37,6 +37,7 @@ import { NodeBBClient } from '../client.js';
 import type { Config } from '../config.js';
 import { buildServer } from '../server.js';
 import { PluginOAuthProvider, SCOPE, type NodeBBTokens } from './provider.js';
+import { runDiagnostics } from './diagnostics.js';
 import { PluginStore, type Db, type Grant } from './store.js';
 
 /** NodeBB's module loader (nodebb.require / require.main.require), handed over by library.cjs. */
@@ -68,6 +69,8 @@ interface Runtime {
 	url: string;
 	/** The MCP endpoint's public URL (also the OAuth issuer and resource). */
 	endpoint: string;
+	/** Where tools reach the forum first (loopback), or the public URL when there is none. */
+	apiUrl: string;
 	relativePath: string;
 	settings(): Promise<Settings>;
 	configFor(grant: Grant): Promise<Config>;
@@ -75,6 +78,8 @@ interface Runtime {
 }
 
 let runtime: Runtime | undefined;
+/** NodeBB's Express app, for its 'trust proxy' setting in diagnostics. */
+let nodebbApp: any;
 
 /** Where the forum answers this process over loopback, so tool calls skip the public proxy. */
 function loopbackUrl(nconf: { get(key: string): any }, publicUrl: string): string {
@@ -149,7 +154,7 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 		return entry;
 	};
 
-	return { nbb, store, provider, url, endpoint: `${url}${MCP_PATH}`, relativePath, settings, configFor, userFor };
+	return { nbb, store, provider, url, apiUrl, endpoint: `${url}${MCP_PATH}`, relativePath, settings, configFor, userFor };
 }
 
 /** Discovery documents: at the origin root, path-aware (RFC 8414 §3, RFC 9728 §3). */
@@ -282,6 +287,7 @@ function view(grant: Grant) {
 export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void> {
 	const rt = makeRuntime(nbb);
 	runtime = rt;
+	nodebbApp = params.app;
 	const { router, middleware } = params;
 	const routeHelpers = nbb('./src/routes/helpers');
 	const user = nbb('./src/user');
@@ -420,6 +426,35 @@ export async function apiRoutes(params: HookParams, nbb: NodeBBRequire): Promise
 		}
 		await rt.provider.endGrant(grant.id);
 		helpers.formatApiResponse(200, res, { ended: grant.id });
+	});
+	await diagnosticsRoute(params, nbb);
+}
+
+/** GET /api/v3/plugins/mcp/diagnostics — administrators: can tools reach the forum, and if not, why. */
+export async function diagnosticsRoute(params: HookParams, nbb: NodeBBRequire): Promise<void> {
+	const routeHelpers = nbb('./src/routes/helpers');
+	const helpers = nbb('./src/controllers/helpers');
+	const user = nbb('./src/user');
+	const nconf = nbb('nconf');
+	routeHelpers.setupApiRoute(params.router, 'get', '/mcp/diagnostics', [params.middleware.ensureLoggedIn], async (req: any, res: any) => {
+		if (!(await user.isAdministrator(req.uid))) {
+			helpers.formatApiResponse(403, res, new Error('[[error:no-privileges]]'));
+			return;
+		}
+		const rt = runtime;
+		if (!rt) {
+			helpers.formatApiResponse(503, res, new Error('The MCP plugin has not finished starting.'));
+			return;
+		}
+		const report = await runDiagnostics({
+			url: rt.url,
+			apiUrl: rt.apiUrl,
+			relativePath: rt.relativePath,
+			endpoint: rt.endpoint,
+			nconf,
+			trustProxy: nodebbApp?.get?.('trust proxy'),
+		});
+		helpers.formatApiResponse(200, res, report);
 	});
 }
 
