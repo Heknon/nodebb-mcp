@@ -36,6 +36,8 @@ export interface Report {
 export interface DiagnosticsInput {
 	url: string;
 	apiUrl: string;
+	/** The automatic address; differs from apiUrl when the ACP sets one. */
+	autoApiUrl?: string;
 	relativePath: string;
 	endpoint: string;
 	nconf: { get(key: string): any };
@@ -93,6 +95,13 @@ async function probe(url: string, timeoutMs: number, init: RequestInit = {}): Pr
 	} catch (err) {
 		return { ok: false, ms: Date.now() - started, error: unwrap(err) };
 	}
+}
+
+/** The innermost message, without repeating the code already shown. */
+function lastReason(error: NonNullable<Probe['error']>): string {
+	const last = error.chain.at(-1) ?? '';
+	const text = error.code && last.startsWith(`${error.code}: `) ? last.slice(error.code.length + 2) : last;
+	return text && text !== error.code ? ` (${text})` : '';
 }
 
 /** Plain-language reason and fix for a low-level connection error. */
@@ -158,7 +167,7 @@ function probeCheck(id: string, title: string, url: string, p: Probe, where: 'lo
 	if (p.status !== undefined) Object.assign(details, { status: p.status, contentType: p.contentType, headers: p.headers });
 	if (p.error) details.error = p.error;
 	if (p.error) {
-		return { id, title, status: 'fail', summary: `No HTTP response: ${p.error.code ?? p.error.name}${p.error.chain.length ? ` (${p.error.chain.at(-1)})` : ''}`, advice: explain(p.error, where), details };
+		return { id, title, status: 'fail', summary: `No HTTP response: ${p.error.code ?? p.error.name}${lastReason(p.error)}`, advice: explain(p.error, where), details };
 	}
 	if (!p.ok || !looksLikeConfig(p)) {
 		if (!looksLikeConfig(p) && p.body) details.bodyStart = p.body.slice(0, 300);
@@ -175,6 +184,8 @@ function probeCheck(id: string, title: string, url: string, p: Probe, where: 'lo
 
 export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 	const { url, apiUrl, relativePath, nconf } = input;
+	const custom = input.autoApiUrl !== undefined && apiUrl !== input.autoApiUrl;
+	const routeName = custom ? 'Configured address' : 'Loopback route';
 	const timeoutMs = input.timeoutMs ?? 5000;
 	const checks: Check[] = [];
 
@@ -188,7 +199,9 @@ export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 		bind_address: nconf.get('bind_address') ?? '(all interfaces)',
 		ssl: Boolean(nconf.get('ssl')),
 		trust_proxy: input.trustProxy,
-		loopbackUrl: apiUrl,
+		toolsUrl: apiUrl,
+		toolsUrlSource: custom ? 'ACP setting "Forum address for tools"' : 'automatic',
+		automaticUrl: input.autoApiUrl,
 		node: process.version,
 		pid: process.pid,
 		proxyEnv: proxyEnv.length ? Object.fromEntries(proxyEnv.map(k => [k, env(k)])) : undefined,
@@ -197,7 +210,7 @@ export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 		NODE_TLS_REJECT_UNAUTHORIZED: process.env.NODE_TLS_REJECT_UNAUTHORIZED,
 	};
 	const configAdvice: string[] = [];
-	if (apiUrl === url) configAdvice.push(nconf.get('ssl')
+	if (apiUrl === url && !custom) configAdvice.push(nconf.get('ssl')
 		? 'NodeBB terminates TLS itself, so there is no plain loopback route: tools always use the public URL.'
 		: 'No numeric port in the config, so there is no loopback route: tools always use the public URL.');
 	if (proxyEnv.length && process.env.NODE_USE_ENV_PROXY) configAdvice.push('An HTTP proxy is configured for Node; make sure NO_PROXY covers 127.0.0.1 and the forum\'s own domain.');
@@ -211,7 +224,7 @@ export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 			id: 'config',
 			title: 'Forum configuration',
 			status: configAdvice.length ? 'warn' : 'ok',
-			summary: `url ${url}, port ${String(config.port ?? '?')}, loopback ${apiUrl === url ? '(none)' : apiUrl}`,
+			summary: `url ${url}, port ${String(config.port ?? '?')}, tools use ${apiUrl === url ? 'the public URL' : apiUrl}${custom ? ' (set in the ACP)' : ''}`,
 			advice: configAdvice.join(' ') || undefined,
 			details: config,
 		});
@@ -222,11 +235,12 @@ export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 	if (apiUrl !== url) {
 		const target = `${apiUrl}/api/config`;
 		const p = await probe(target, timeoutMs);
-		const check = probeCheck('loopback', 'Loopback route (tools try this first)', target, p, 'loopback', relativePath);
+		const check = probeCheck('loopback', `${routeName} (tools try this first)`, target, p, 'loopback', relativePath);
 		loopbackOk = check.status !== 'fail';
+		if (custom && check.status === 'fail') check.advice = `${check.advice ?? ''} This address comes from "Forum address for tools" in the settings above: correct it, or clear it to go back to the automatic address (${input.autoApiUrl}).`.trim();
 		checks.push(check);
 	} else {
-		checks.push({ id: 'loopback', title: 'Loopback route (tools try this first)', status: 'skip', summary: 'Not used with this configuration' });
+		checks.push({ id: 'loopback', title: `${routeName} (tools try this first)`, status: 'skip', summary: 'Not used with this configuration' });
 	}
 
 	// 3. DNS for the public name, as the forum host resolves it.
@@ -293,12 +307,13 @@ export async function runDiagnostics(input: DiagnosticsInput): Promise<Report> {
 
 	const route = loopbackOk ? 'loopback' : publicOk ? 'public' : 'none';
 	const worst = checks.reduce<Status>((acc, c) => (c.status === 'fail' ? 'fail' : c.status === 'warn' && acc !== 'fail' ? 'warn' : acc), 'ok');
-	const verdict: Status = route === 'none' ? 'fail' : worst;
+	// Tools work through some route: anything else is a warning, not a failure.
+	const verdict: Status = route === 'none' ? 'fail' : worst === 'fail' ? 'warn' : worst;
 	const headline = route === 'none'
 		? 'Tools cannot reach the forum: neither the loopback address nor the public URL answers from inside the forum process. See the failed checks below.'
 		: route === 'loopback'
-			? `Tools reach the forum over loopback (${apiUrl}).${verdict === 'ok' ? ' Everything checks out.' : ' Some other checks need attention.'}`
-			: `Loopback does not work, so tools fall back to the public URL (${url}). That works, but every tool call goes through the reverse proxy.`;
+			? `Tools reach the forum ${custom ? 'at the configured address' : 'over loopback'} (${apiUrl}).${verdict === 'ok' ? ' Everything checks out.' : ' Some other checks need attention.'}`
+			: `${custom ? 'The configured address' : 'Loopback'} does not work, so tools fall back to the public URL (${url}). That works, but every tool call goes through the reverse proxy.`;
 
 	return { at: new Date().toISOString(), verdict, headline, route, checks };
 }

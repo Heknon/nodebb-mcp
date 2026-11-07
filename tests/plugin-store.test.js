@@ -197,3 +197,15 @@ test('ids that are not ours are never used to build keys', async () => {
 	assert.equal(await store.getPending('x'), undefined);
 	assert.equal(await store.getClient('a:b:c'), undefined);
 });
+
+test('parseApiUrl: blank is automatic, a URL is normalized, junk is ignored and logged', async () => {
+	const { parseApiUrl } = await import('../dist/plugin/index.js');
+	const logged = [];
+	assert.equal(parseApiUrl(''), undefined);
+	assert.equal(parseApiUrl('  '), undefined);
+	assert.equal(parseApiUrl('http://nodebb:4567/'), 'http://nodebb:4567');
+	assert.equal(parseApiUrl('https://forum.example.com/sub/?x=1'), 'https://forum.example.com/sub');
+	assert.equal(parseApiUrl('nodebb:4567x', m => logged.push(m)), undefined);
+	assert.equal(parseApiUrl('ftp://x', m => logged.push(m)), undefined);
+	assert.equal(logged.length, 2);
+});

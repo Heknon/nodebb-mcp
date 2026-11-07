@@ -33,7 +33,7 @@ import { requireBearerAuth } from '@modelcontextprotocol/sdk/server/auth/middlew
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 
 import { CapabilityRegistry } from '../capabilities.js';
-import { NodeBBClient } from '../client.js';
+import { NodeBBClient, type RouteEvent } from '../client.js';
 import type { Config } from '../config.js';
 import { buildServer } from '../server.js';
 import { PluginOAuthProvider, SCOPE, type NodeBBTokens } from './provider.js';
@@ -52,6 +52,24 @@ interface HookParams {
 /** Settings saved from the ACP (`meta.settings` hash "mcp"; checkboxes are "on"/"off"). */
 interface Settings {
 	publicWrites: boolean;
+	/** Where tools send their requests, set in the ACP; undefined: automatic (loopback, then the public URL). */
+	apiUrl?: string;
+}
+
+/** A usable base URL from the ACP field, or undefined (blank or invalid: automatic). */
+export function parseApiUrl(raw: unknown, log?: (msg: string) => void): string | undefined {
+	const text = String(raw ?? '').trim();
+	if (!text) return undefined;
+	try {
+		const parsed = new URL(text);
+		if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+			parsed.search = '';
+			parsed.hash = '';
+			return parsed.href.replace(/\/+$/, '');
+		}
+	} catch { /* reported below */ }
+	log?.(`[mcp] Ignoring "Forum address for tools" = "${text}": not an http(s) URL. Using the automatic address.`);
+	return undefined;
 }
 
 /** Where the plugin answers, under the forum's relative path. */
@@ -69,8 +87,10 @@ interface Runtime {
 	url: string;
 	/** The MCP endpoint's public URL (also the OAuth issuer and resource). */
 	endpoint: string;
-	/** Where tools reach the forum first (loopback), or the public URL when there is none. */
-	apiUrl: string;
+	/** The automatic address for tools: loopback, or the public URL when there is none. */
+	autoApiUrl: string;
+	/** Where tools send requests now (the ACP setting, else autoApiUrl). */
+	apiUrl(): Promise<string>;
 	relativePath: string;
 	settings(): Promise<Settings>;
 	configFor(grant: Grant): Promise<Config>;
@@ -78,6 +98,28 @@ interface Runtime {
 }
 
 let runtime: Runtime | undefined;
+
+/**
+ * Writes connection trouble to NodeBB's log, once per address and cause every
+ * ten minutes: a dead route fails every tool call, and the log should say so
+ * without repeating it for each one.
+ */
+function routeLogger(winston: { warn(m: string): void; error(m: string): void }) {
+	const seen = new Map<string, number>();
+	return (event: RouteEvent) => {
+		const key = JSON.stringify(event);
+		const last = seen.get(key);
+		if (last && Date.now() - last < 10 * 60_000) return;
+		if (seen.size > 200) seen.clear();
+		seen.set(key, Date.now());
+		const fix = 'Run ACP -> Plugins -> MCP -> Test connection for details, or set "Forum address for tools" there.';
+		if (event.kind === 'fallback') {
+			winston.warn(`[mcp] Tools could not connect to the forum at ${event.from} (${event.cause}); using the public URL ${event.to} instead. ${fix}`);
+		} else {
+			winston.error(`[mcp] Tools cannot reach the forum at ${event.url} (${event.cause}); forum tools fail until this is fixed. ${fix}`);
+		}
+	};
+}
 /** NodeBB's Express app, for its 'trust proxy' setting in diagnostics. */
 let nodebbApp: any;
 
@@ -102,7 +144,9 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 
 	const url = String(nconf.get('url')).replace(/\/+$/, '');
 	const relativePath = String(nconf.get('relative_path') ?? '');
-	const apiUrl = loopbackUrl(nconf, url);
+	const autoApiUrl = loopbackUrl(nconf, url);
+	const winston = nbb('winston');
+	const log = routeLogger(winston);
 
 	const users = new Map<string, { writes: boolean; config: Config; client: NodeBBClient; capabilities: CapabilityRegistry }>();
 	const store = new PluginStore(db);
@@ -120,15 +164,18 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 		const started = generation;
 		const raw = (await meta.settings.get('mcp')) ?? {};
 		const on = (value: unknown) => value === true || value === 'on' || value === 'true' || value === '1';
-		const value = { publicWrites: on(raw.publicWrites) };
+		const value = { publicWrites: on(raw.publicWrites), apiUrl: parseApiUrl(raw.apiUrl, m => winston.warn(m)) };
 		// A save landed while this read was in flight: use it once, but do not cache it.
 		if (started === generation) cached = { at: Date.now(), value };
 		return value;
 	};
 
+	/** Where tools send requests now: the ACP's address, else loopback (else the public URL). */
+	const apiUrl = async () => (await settings()).apiUrl ?? autoApiUrl;
+
 	const configFor = async (grant: Grant): Promise<Config> => ({
 		url,
-		apiUrl,
+		apiUrl: await apiUrl(),
 		token: grant.nodebbToken,
 		uid: undefined,
 		username: undefined,
@@ -146,15 +193,15 @@ function makeRuntime(nbb: NodeBBRequire): Runtime {
 	const userFor = async (grant: Grant) => {
 		const config = await configFor(grant);
 		const known = users.get(grant.id);
-		if (known && known.writes === config.enableWrites) return known;
-		const client = new NodeBBClient(config);
+		if (known && known.writes === config.enableWrites && known.config.apiUrl === config.apiUrl) return known;
+		const client = new NodeBBClient(config, { onRoute: log });
 		const entry = { writes: config.enableWrites, config, client, capabilities: new CapabilityRegistry(client, config) };
 		if (users.size >= 1000) users.delete(users.keys().next().value as string);
 		users.set(grant.id, entry);
 		return entry;
 	};
 
-	return { nbb, store, provider, url, apiUrl, endpoint: `${url}${MCP_PATH}`, relativePath, settings, configFor, userFor };
+	return { nbb, store, provider, url, autoApiUrl, apiUrl, endpoint: `${url}${MCP_PATH}`, relativePath, settings, configFor, userFor };
 }
 
 /** Discovery documents: at the origin root, path-aware (RFC 8414 §3, RFC 9728 §3). */
@@ -288,6 +335,10 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 	const rt = makeRuntime(nbb);
 	runtime = rt;
 	nodebbApp = params.app;
+	rt.apiUrl().then(target => {
+		const how = target === rt.autoApiUrl ? (target === rt.url ? 'public URL' : 'loopback') : 'set in the ACP';
+		nbb('winston').info(`[mcp] MCP endpoint ${rt.endpoint}; tools reach the forum at ${target} (${how})${target === rt.url ? '' : `, falling back to ${rt.url}`}.`);
+	}).catch(() => { /* settings unreadable at startup: the first request reports it */ });
 	const { router, middleware } = params;
 	const routeHelpers = nbb('./src/routes/helpers');
 	const user = nbb('./src/user');
@@ -402,6 +453,7 @@ export async function init(params: HookParams, nbb: NodeBBRequire): Promise<void
 		res.render('admin/plugins/mcp', {
 			title: 'MCP',
 			endpoint: rt.endpoint,
+			autoApiUrl: rt.autoApiUrl,
 			grants: grants.map(view),
 			hasGrants: grants.length > 0,
 		});
@@ -448,7 +500,8 @@ export async function diagnosticsRoute(params: HookParams, nbb: NodeBBRequire): 
 		}
 		const report = await runDiagnostics({
 			url: rt.url,
-			apiUrl: rt.apiUrl,
+			apiUrl: await rt.apiUrl(),
+			autoApiUrl: rt.autoApiUrl,
 			relativePath: rt.relativePath,
 			endpoint: rt.endpoint,
 			nconf,

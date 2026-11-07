@@ -141,6 +141,26 @@ test('a loopback address that refuses falls back to the public URL, and stays th
 	assert.equal((await client.read('/config')).siteTitle, 'Fake Forum');
 });
 
+test('the fallback and a dead forum are reported through onRoute', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const events = [];
+	const client = new NodeBBClient({ ...configFor(forum.url), apiUrl: 'http://127.0.0.1:1' }, { onRoute: e => events.push(e) });
+	await client.read('/config');
+	await client.read('/config');
+	assert.equal(events.length, 1);
+	assert.equal(events[0].kind, 'fallback');
+	assert.equal(events[0].from, 'http://127.0.0.1:1');
+	assert.equal(events[0].to, forum.url);
+	assert.ok(events[0].cause);
+
+	const dead = [];
+	const down = new NodeBBClient(configFor('http://127.0.0.1:2'), { onRoute: e => dead.push(e) });
+	await assert.rejects(() => down.read('/config'));
+	assert.equal(dead[0].kind, 'unreachable');
+	assert.match(dead[0].url, /127\.0\.0\.1:2\/api\/config/);
+});
+
 test('when both addresses fail, the error names the public one', async () => {
 	const client = new NodeBBClient({ ...configFor('http://127.0.0.1:2'), apiUrl: 'http://127.0.0.1:1' });
 	await assert.rejects(() => client.read('/config'), (err) => {

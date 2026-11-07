@@ -18,6 +18,11 @@
 							<label for="publicWrites" class="form-check-label">Public writes</label>
 						</div>
 						<p class="form-text">Let connected apps post topics and replies, edit posts, vote and accept answers — as the person, within their privileges. Off by default. Shotef ticket actions (notes, status, assignment) do not need this: Shotef checks team membership itself.</p>
+						<div class="mb-2 mt-3">
+							<label for="apiUrl" class="form-label">Forum address for tools</label>
+							<input type="text" class="form-control" id="apiUrl" name="apiUrl" placeholder="Automatic: {autoApiUrl}">
+						</div>
+						<p class="form-text">Where tools send their requests to this forum, as seen from the forum's own server. Leave blank for automatic: NodeBB's own port on loopback, then the public URL if that fails. Set it when NodeBB listens somewhere else, for example <code>http://127.0.0.1:4567</code> or a container name such as <code>http://nodebb:4567</code>. Use <b>Test connection</b> below after saving.</p>
 					</form>
 					<button id="mcp-save" class="btn btn-primary">Save</button>
 				</div>

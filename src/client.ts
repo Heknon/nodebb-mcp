@@ -83,7 +83,11 @@ export class NodeBBClient {
 	 * @param session a signed-in session to use instead of the configured
 	 *        credentials — how the HTTP server gives each OAuth user their own.
 	 */
-	constructor(private readonly config: Config, opts: { session?: PasswordSession } = {}) {
+	/** Told when a request cannot connect: the plugin writes it to the forum's log. */
+	private readonly onRoute?: (event: RouteEvent) => void;
+
+	constructor(private readonly config: Config, opts: { session?: PasswordSession; onRoute?: (event: RouteEvent) => void } = {}) {
+		this.onRoute = opts.onRoute;
 		if (opts.session) {
 			this.session = opts.session;
 			this.sessionCheckMs = config.sessionCheckMs;
@@ -208,12 +212,14 @@ export class NodeBBClient {
 			// Inside the plugin, requests go to the forum over loopback. Where that address
 			// does not answer (a container, a bind address, a port NodeBB was not told about),
 			// the connection fails at once: fall back to the public URL for good and retry.
-			if (!aborted && !this.loopbackFailed && this.config.apiUrl && this.config.apiUrl !== this.config.url) {
-				this.loopbackFailed = true;
-				return this.send(path, options);
-			}
 			const where = new URL(url);
 			where.search = '';
+			if (!aborted && !this.loopbackFailed && this.config.apiUrl && this.config.apiUrl !== this.config.url) {
+				this.loopbackFailed = true;
+				this.onRoute?.({ kind: 'fallback', from: this.config.apiUrl, to: this.config.url, cause: describeCause(cause).slice(2, -1) || 'connection failed' });
+				return this.send(path, options);
+			}
+			this.onRoute?.({ kind: aborted ? 'timeout' : 'unreachable', url: where.href, cause: aborted ? `no answer in ${this.config.timeoutMs} ms` : describeCause(cause).slice(2, -1) || 'connection failed' });
 			throw new NodeBBError(
 				aborted ? 'timeout' : 'network',
 				aborted
@@ -287,6 +293,11 @@ export class NodeBBClient {
 		return this.request<T>(`/api/v3${path}`, { method, body: body ?? {} });
 	}
 }
+
+/** A connection problem worth an administrator's attention (the plugin logs these). */
+export type RouteEvent =
+	| { kind: 'fallback'; from: string; to: string; cause: string }
+	| { kind: 'unreachable' | 'timeout'; url: string; cause: string };
 
 /** The low-level reason fetch failed (ECONNREFUSED, ENOTFOUND, a certificate error...), for the message. */
 function describeCause(cause: unknown): string {
