@@ -61,3 +61,16 @@ test('something other than NodeBB answering is called out', async (t) => {
 	assert.match(pub.advice, /not NodeBB/);
 	assert.match(pub.details.bodyStart, /nginx/);
 });
+
+test('a large /api/config (real forums are well over 4 KB) is still recognised as NodeBB', async (t) => {
+	const { createServer: http } = await import('node:http');
+	const config = { relative_path: '', siteTitle: 'Big Forum', padding: 'x'.repeat(20000) };
+	const srv = http((_req, res) => { res.setHeader('content-type', 'application/json; charset=utf-8'); res.end(JSON.stringify(config)); });
+	await new Promise(r => srv.listen(0, '127.0.0.1', r));
+	t.after(() => srv.close());
+	const url = `http://127.0.0.1:${srv.address().port}`;
+	const report = await runDiagnostics({ url, apiUrl: url, relativePath: '', endpoint: `${url}/api/mcp`, nconf: nconf({}), trustProxy: undefined, timeoutMs: 2000 });
+	const pub = byId(report, 'public');
+	assert.equal(pub.status, 'ok', pub.summary);
+	assert.match(pub.summary, /Big Forum/);
+});

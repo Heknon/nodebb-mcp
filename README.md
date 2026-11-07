@@ -182,7 +182,7 @@ is revoked. NodeBB limits sign-ins (by default, 5 failures an hour lock the
 account; 20 sign-ins an hour from one IP lock the IP), so new processes reuse the
 cached session, a wrong password is tried once and remembered for an hour, and
 the password itself is never written anywhere. The session shows on the account's
-sessions page as *nodebb-mcp 0.2.0 on Linux*. Two-factor accounts need an API
+sessions page as *nodebb-mcp 0.2.1 on Linux*. Two-factor accounts need an API
 token instead.
 
 **Check who you are.** NodeBB does not reject an invalid or revoked token; it

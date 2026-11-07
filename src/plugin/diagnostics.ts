@@ -80,11 +80,13 @@ async function probe(url: string, timeoutMs: number, init: RequestInit = {}): Pr
 			headers: { accept: 'application/json', 'user-agent': 'nodebb-plugin-mcp/diagnostics', ...(init.headers ?? {}) },
 			signal: AbortSignal.timeout(timeoutMs),
 		});
-		const body = (await res.text()).slice(0, 4000);
+		// Parse the whole body: a real forum's /api/config is often well over 4 KB.
+		const text = await res.text();
+		const body = text.slice(0, 4000);
 		const contentType = res.headers.get('content-type') ?? '';
 		let json: any;
 		if (contentType.includes('json')) {
-			try { json = JSON.parse(body); } catch { /* reported as not-JSON below */ }
+			try { json = JSON.parse(text); } catch { /* reported as not-JSON below */ }
 		}
 		const headers: Record<string, string> = {};
 		for (const key of ['location', 'server', 'www-authenticate', 'x-powered-by', 'via']) {
