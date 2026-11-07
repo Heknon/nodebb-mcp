@@ -125,6 +125,31 @@ test('an unreachable host is a network failure, not a crash', async () => {
 	});
 });
 
+test('a failure names the address tried and why', async () => {
+	const client = new NodeBBClient(configFor('http://127.0.0.1:1'));
+	await assert.rejects(() => client.read('/config'), (err) => {
+		assert.match(err.message, /http:\/\/127\.0\.0\.1:1\/api\/config \(.+\)$/);
+		return true;
+	});
+});
+
+test('a loopback address that refuses falls back to the public URL, and stays there', async (t) => {
+	const forum = await startFakeForum();
+	t.after(() => forum.close());
+	const client = new NodeBBClient({ ...configFor(forum.url), apiUrl: 'http://127.0.0.1:1' });
+	assert.equal((await client.read('/config')).siteTitle, 'Fake Forum');
+	assert.equal((await client.read('/config')).siteTitle, 'Fake Forum');
+});
+
+test('when both addresses fail, the error names the public one', async () => {
+	const client = new NodeBBClient({ ...configFor('http://127.0.0.1:2'), apiUrl: 'http://127.0.0.1:1' });
+	await assert.rejects(() => client.read('/config'), (err) => {
+		assert.equal(err.kind, 'network');
+		assert.match(err.message, /127\.0\.0\.1:2\/api\/config/);
+		return true;
+	});
+});
+
 test('link() builds absolute forum URLs', async () => {
 	const client = new NodeBBClient(configFor('https://f.example.com/forum'));
 	assert.equal(client.link('/topic/10'), 'https://f.example.com/forum/topic/10');

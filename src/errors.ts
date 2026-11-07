@@ -39,7 +39,8 @@ export class NodeBBError extends Error {
 	get hint(): string {
 		switch (this.kind) {
 			case 'network':
-				return 'Check NODEBB_URL and that the forum is reachable from this machine.';
+				return 'Check that the forum is reachable from the MCP server: NODEBB_URL when it runs on its own; ' +
+					'as the forum plugin, the forum\'s configured url (config.json) from the forum host itself.';
 			case 'timeout':
 				return 'The forum did not respond in time; raise NODEBB_TIMEOUT_MS or retry.';
 			case 'auth':

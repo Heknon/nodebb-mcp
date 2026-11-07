@@ -99,6 +99,9 @@ export class NodeBBClient {
 		}
 	}
 
+	/** Set once the loopback address (`apiUrl`) refused a connection: use the public URL from then on. */
+	private loopbackFailed = false;
+
 	get baseUrl(): string {
 		return this.config.url;
 	}
@@ -115,7 +118,7 @@ export class NodeBBClient {
 	}
 
 	private buildUrl(path: string, query: RequestOptions['query']): string {
-		const base = this.config.apiUrl ?? this.config.url;
+		const base = this.loopbackFailed ? this.config.url : (this.config.apiUrl ?? this.config.url);
 		const url = new URL(`${base}${path.startsWith('/') ? path : `/${path}`}`);
 		for (const [key, value] of Object.entries(query ?? {})) {
 			if (value === undefined) continue;
@@ -202,11 +205,20 @@ export class NodeBBClient {
 		} catch (cause) {
 			const aborted = cause instanceof Error &&
 				(cause.name === 'TimeoutError' || cause.name === 'AbortError');
+			// Inside the plugin, requests go to the forum over loopback. Where that address
+			// does not answer (a container, a bind address, a port NodeBB was not told about),
+			// the connection fails at once: fall back to the public URL for good and retry.
+			if (!aborted && !this.loopbackFailed && this.config.apiUrl && this.config.apiUrl !== this.config.url) {
+				this.loopbackFailed = true;
+				return this.send(path, options);
+			}
+			const where = new URL(url);
+			where.search = '';
 			throw new NodeBBError(
 				aborted ? 'timeout' : 'network',
 				aborted
 					? `Request to ${path} timed out after ${this.config.timeoutMs}ms`
-					: `Could not reach the forum at ${this.config.url}${path}`,
+					: `Could not reach the forum at ${where.href}${describeCause(cause)}`,
 				{ path, cause },
 			);
 		}
@@ -274,4 +286,11 @@ export class NodeBBClient {
 	write<T = unknown>(method: 'POST' | 'PUT' | 'DELETE', path: string, body?: unknown): Promise<T> {
 		return this.request<T>(`/api/v3${path}`, { method, body: body ?? {} });
 	}
+}
+
+/** The low-level reason fetch failed (ECONNREFUSED, ENOTFOUND, a certificate error...), for the message. */
+function describeCause(cause: unknown): string {
+	const inner = cause instanceof Error ? (cause.cause as { code?: string; message?: string } | undefined) : undefined;
+	const reason = inner?.code ?? inner?.message ?? (cause instanceof Error ? cause.message : '');
+	return reason ? ` (${String(reason).replace(/[^\x20-\x7e]/g, '?')})` : '';
 }
